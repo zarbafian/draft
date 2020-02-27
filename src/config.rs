@@ -12,10 +12,10 @@ pub fn get_config_file() -> Result<String, VarError>{
     env::var(ENV_CONFIG_PATH)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
-    members: String,
-    me: String,
+    pub members: String,
+    pub me: String,
 }
 impl Config {
     pub fn new(path: &String) -> Result<Config, Box<dyn Error>> {
