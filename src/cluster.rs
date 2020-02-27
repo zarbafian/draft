@@ -5,6 +5,8 @@ use std::net::{SocketAddr};
 use std::str::FromStr;
 use std::time::Duration;
 use rand::Rng;
+use std::error::Error;
+use crate::message::{Request, RequestArgument, ACTION_PING};
 
 #[derive(Debug, Clone)]
 pub struct Member {
@@ -17,7 +19,7 @@ pub struct Cluster {
     pub others: Vec<Member>,
 }
 
-pub fn parse_members(config: Config) -> Cluster {
+pub fn get_from(config: &Config) -> Result<Cluster, Box<dyn Error>> {
 
     // Parse list of members
     let members: Vec<&str> = config.members.split(',').collect();
@@ -25,7 +27,7 @@ pub fn parse_members(config: Config) -> Cluster {
     // Initialize cluster members
     let me = Member {
         addr:
-        SocketAddr::from_str(config.me.as_str()).expect("Invalid socket address for this member")
+        SocketAddr::from_str(config.me.as_str())?
     };
 
     let mut others = Vec::new();
@@ -33,12 +35,16 @@ pub fn parse_members(config: Config) -> Cluster {
         if !other.eq(&config.me) {
             others.push(Member{
                 addr:
-                SocketAddr::from_str(other).expect("Invalid socket address for an other member")
+                SocketAddr::from_str(other)?
             });
         }
     }
 
-    Cluster {me, others}
+    if members.len() != 1 + others.len() {
+        Err("Members count should be equal to one plus the count of others")?
+    }
+
+    Ok(Cluster {me, others})
 }
 
 pub fn start_cluster_management_thread(cluster: Cluster) -> JoinHandle<()> {
@@ -59,10 +65,16 @@ pub fn start_cluster_management_thread(cluster: Cluster) -> JoinHandle<()> {
                 println!("=");
             }
 
-            // TODO: random other member selection
-            let other = cluster.others.get(0).unwrap();
+            // Randomly select another member
+            let other_index = rng.gen_range(0, cluster.others.len());
+            let other = cluster.others.get(other_index).unwrap();
 
-            crate::socket::send_message_to(other.addr);
+            // Create message
+            let message = rng.gen_range(0, 1000000);
+            let mut request = Request::new(String::from(ACTION_PING));
+            request.push_arg(RequestArgument{key: String::from("ID"), value: message.to_string()});
+
+            crate::socket::send_message_to(request, other.addr);
         }
     });
 
