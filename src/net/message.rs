@@ -1,6 +1,6 @@
 use serde::{Serialize, Deserialize};
-use std::error::Error;
 
+#[derive(Debug)]
 pub enum Type {
     AppendEntriesRequest,
     AppendEntriesResponse,

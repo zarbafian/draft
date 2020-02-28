@@ -54,6 +54,8 @@ fn main() {
 
                         if let Some(message_type) = message::get_type(data[0]) {
 
+                            println!("Received message type: {:?}", message_type);
+
                             let json: String = String::from_utf8_lossy(&data[1..amt]).to_string();
 
                             match message_type {
@@ -65,6 +67,7 @@ fn main() {
                                             return;
                                         },
                                     };
+                                    println!("Received message: {:?}", request);
                                 },
                                 _ => ()
                             }
