@@ -1,7 +1,6 @@
+/*
 use serde::{Serialize, Deserialize};
 use std::error::Error;
-
-pub const ACTION_PING: &str = "PING";
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RequestArgument {
@@ -32,3 +31,4 @@ pub fn deserialize(json: &String) -> Result<Request, Box<dyn Error>> {
 
     Ok(serde_json::from_str(json)?)
 }
+*/

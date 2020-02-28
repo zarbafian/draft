@@ -10,6 +10,8 @@ const PROPERTY_SEPARATOR: &str = "=";
 pub struct Config {
     pub members: String,
     pub me: String,
+    pub election_timout: u16,
+    pub election_randomness: u16,
 }
 
 pub fn get() -> Result<Config, Box<dyn Error>> {
@@ -21,6 +23,14 @@ pub fn get() -> Result<Config, Box<dyn Error>> {
     Ok(Config{
         members: String::from(properties.get("members").expect("Missing property: members")),
         me: String::from(properties.get("me").expect("Missing property: me")),
+        election_timout: properties.get("election.timeout")
+            .expect("Missing property: election.timeout")
+            .parse()
+            .expect("Invalid value for election timeout"),
+        election_randomness: properties.get("election.randomness")
+            .expect("Missing property: election.randomness")
+            .parse()
+            .expect("Invalid value for election randomness"),
     })
 }
 

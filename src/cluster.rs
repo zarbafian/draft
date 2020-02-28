@@ -6,7 +6,6 @@ use std::str::FromStr;
 use std::time::Duration;
 use rand::Rng;
 use std::error::Error;
-use crate::message::{Request, RequestArgument, ACTION_PING};
 
 #[derive(Debug, Clone)]
 pub struct Member {
@@ -69,12 +68,15 @@ pub fn start_cluster_management_thread(cluster: Cluster) -> JoinHandle<()> {
             let other_index = rng.gen_range(0, cluster.others.len());
             let other = cluster.others.get(other_index).unwrap();
 
+            /*
+            TODO
             // Create message
             let message = rng.gen_range(0, 1000000);
-            let mut request = Request::new(String::from(ACTION_PING));
+            let mut request = AppendEntriesRequest::new(String::from("PING"));
             request.push_arg(RequestArgument{key: String::from("ID"), value: message.to_string()});
 
             crate::socket::send_message_to(request, other.addr);
+            */
         }
     });
 

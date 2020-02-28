@@ -1,3 +1,4 @@
+/*
 use std::thread::{self, JoinHandle};
 use std::net::{UdpSocket, SocketAddr};
 use crate::message;
@@ -42,3 +43,4 @@ pub fn start_listener(addr: SocketAddr) -> JoinHandle<()> {
 
     handle
 }
+*/
