@@ -1,11 +1,14 @@
-use std::net;
-use crate::config::Config;
-use std::thread::{self,JoinHandle};
-use std::net::{SocketAddr};
+use std::net::{self, SocketAddr};
 use std::str::FromStr;
+use std::error::Error;
+
+use crate::config::Config;
+
+/*
+use std::thread::{self,JoinHandle};
 use std::time::Duration;
 use rand::Rng;
-use std::error::Error;
+*/
 
 #[derive(Debug, Clone)]
 pub struct Member {
@@ -45,7 +48,7 @@ pub fn get_from(config: &Config) -> Result<Cluster, Box<dyn Error>> {
 
     Ok(Cluster {me, others})
 }
-
+/*
 pub fn start_cluster_management_thread(cluster: Cluster) -> JoinHandle<()> {
 
     let handle = thread::spawn(move||{
@@ -82,3 +85,4 @@ pub fn start_cluster_management_thread(cluster: Cluster) -> JoinHandle<()> {
 
     handle
 }
+*/

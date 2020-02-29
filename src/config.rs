@@ -10,8 +10,8 @@ const PROPERTY_SEPARATOR: &str = "=";
 pub struct Config {
     pub members: String,
     pub me: String,
-    pub election_timout: u16,
-    pub election_randomness: u16,
+    pub election_timout: u64,
+    pub election_randomness: u64,
 }
 
 pub fn get() -> Result<Config, Box<dyn Error>> {
