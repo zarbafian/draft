@@ -62,7 +62,10 @@ pub fn run(config: Config) {
                                 // Notify of received heartbeat
                                 let (lock, cvar) = &*moved_loop_pair;
                                 let mut state_machine = lock.lock().unwrap();
-                                state_machine.heartbeat_received = true;
+
+                                //state_machine.heartbeat_received = true;
+                                state_machine.apply_message(request);
+
                                 cvar.notify_one();
                             },
                             _ => ()
@@ -97,15 +100,43 @@ impl StateMachine {
             heartbeat_received: false,
         }
     }
+
+    fn apply_message(&mut self, message: AppendEntriesRequest) {
+
+        // TODO: check message content
+        self.heartbeat_received = true;
+    }
+
+    fn try_election_timeout(&mut self) -> bool {
+
+        if self.heartbeat_received {
+
+            // Reset flag and wait for another heartbeat
+            self.heartbeat_received = false;
+
+            // Has not timed out
+            false
+        } else {
+
+            // Switch to candidate
+            self.current_state = ElectionState::Candidate;
+
+            // Has timed out
+            true
+        }
+    }
 }
 
 fn start_behavior(arc_pair: Arc<(Mutex<StateMachine>, Condvar)>) {
 
     thread::spawn(move ||{
 
+        // life of state machine: start a behavior and wait for it to finish
         loop {
 
             let moved_clone = arc_pair.clone();
+
+            // Retrieve state to determine behavior
             let election_state;
             {
                 let tmp_clone = arc_pair.clone();
@@ -116,9 +147,9 @@ fn start_behavior(arc_pair: Arc<(Mutex<StateMachine>, Condvar)>) {
 
             // Start behavior
             let handle = match election_state {
-                ElectionState::Follower => follower_behavior(moved_clone.clone()),
-                ElectionState::Candidate => candidate_behavior(moved_clone.clone()),
-                ElectionState::Leader => leader_behavior(moved_clone.clone()),
+                ElectionState::Follower => follower_behavior(moved_clone),
+                ElectionState::Candidate => candidate_behavior(moved_clone),
+                ElectionState::Leader => leader_behavior(moved_clone),
             };
 
             // Wait for behavior to finish
@@ -162,6 +193,7 @@ fn follower_behavior(arc_pair: Arc<(Mutex<StateMachine>, Condvar)>) -> JoinHandl
 
         let (lock, cvar) = &*arc_pair;
 
+        // Loop until an election timeout occurs
         loop {
             println!("-- election: loop start");
 
@@ -178,16 +210,13 @@ fn follower_behavior(arc_pair: Arc<(Mutex<StateMachine>, Condvar)>) -> JoinHandl
 
             state_machine = result.0;
 
-            if state_machine.heartbeat_received == true {
-                println!("-- election: received HEARTBEAT -|v-|v-|v-|v-|v-|v-|v");
-                // Reset heartbeat timeout
-                state_machine.heartbeat_received = false;
-                continue;
+            if state_machine.try_election_timeout() {
+                println!("-- election - timeout! Viva la revolucion!");
+                break;
             }
             else {
-                println!("-- election - timeout! Viva la revolucion!");
-                state_machine.current_state = ElectionState::Candidate;
-                break;
+                println!("-- election: received HEARTBEAT -|v-|v-|v-|v-|v-|v-|v");
+                continue;
             }
         }
 
