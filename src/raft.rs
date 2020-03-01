@@ -1,18 +1,20 @@
 use std::thread::{self, JoinHandle};
 use std::net::UdpSocket;
 
-use crate::net::message::{self, AppendEntriesRequest};
+use crate::message::{self, AppendEntriesRequest};
 use crate::config::Config;
-use crate::cluster::Cluster;
 use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex, Condvar};
 
-pub fn run(config: Config, cluster: Cluster) {
+pub fn run(config: Config) {
+
+    // Copy my address before it is moved
+    let my_address = config.cluster.me.addr.clone();
 
     let state_machine = StateMachine::new(config);
 
     // Bind listener socket
-    let socket = UdpSocket::bind(cluster.me.addr)
+    let socket = UdpSocket::bind(my_address)
         .expect("could not bind listener socket");
 
     // Receive buffer
@@ -22,12 +24,8 @@ pub fn run(config: Config, cluster: Cluster) {
     let original_pair = Arc::new((Mutex::new(state_machine), Condvar::new()));
     let behavior_pair = original_pair.clone();
 
-    {
-        // Start consensus
-        let (lock, cvar) = &*original_pair;
-        let state_machine = lock.lock().unwrap();
-        let behavior = state_machine.start_behavior(behavior_pair);
-    }
+    // Start consensus
+    start_behavior(behavior_pair);
 
     loop {
         // Clone at each loop so it can move in the thread closure
@@ -77,7 +75,7 @@ pub fn run(config: Config, cluster: Cluster) {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 enum ElectionState {
     Follower,
     Candidate,
@@ -99,45 +97,100 @@ impl StateMachine {
             heartbeat_received: false,
         }
     }
+}
 
-    fn start_behavior(&self, election_timeout_pair: Arc<(Mutex<StateMachine>, Condvar)>) -> JoinHandle<()> {
+fn start_behavior(arc_pair: Arc<(Mutex<StateMachine>, Condvar)>) {
 
-        let timeout = self.election_timout;
+    thread::spawn(move ||{
 
-        thread::spawn(move || {
+        loop {
 
-            let (lock, cvar) = &*election_timeout_pair;
-
-            loop {
-                println!("-- election: loop start");
-
-                let mut state_machine = lock.lock().unwrap();
-
-                println!("-- election - wait for heartbeat: {}", 0);
-                let start = Instant::now();
-
-                // TODO: use self.election_timout
-                //let result = cvar.wait_timeout(state_machine, Duration::from_millis(5000)).unwrap();
-                let result = cvar.wait_timeout(state_machine, Duration::from_millis(timeout)).unwrap();
-
-                let duration = start.elapsed();
-                println!("-- election - waited: {}", duration.as_millis());
-
-                state_machine = result.0;
-
-                if state_machine.heartbeat_received == true {
-                    println!("-- election: received HEARTBEAT -|v-|v-|v-|v-|v-|v-|v");
-                    // Reset heartbeat timeout
-                    state_machine.heartbeat_received = false;
-                    continue;
-                }
-                else {
-                    println!("-- election - timeout! Viva la revolucion!");
-                    break;
-                }
+            let moved_clone = arc_pair.clone();
+            let election_state;
+            {
+                let tmp_clone = arc_pair.clone();
+                let (lock, _cvar) = &*tmp_clone;
+                let state_machine = lock.lock().unwrap();
+                election_state = state_machine.current_state;
             }
 
-            println!("----- end follower, begin candidate");
-        })
-    }
+            // Start behavior
+            let handle = match election_state {
+                ElectionState::Follower => follower_behavior(moved_clone.clone()),
+                ElectionState::Candidate => candidate_behavior(moved_clone.clone()),
+                ElectionState::Leader => leader_behavior(moved_clone.clone()),
+            };
+
+            // Wait for behavior to finish
+            handle.join().unwrap()
+        }
+    });
+}
+
+fn candidate_behavior(arc_pair: Arc<(Mutex<StateMachine>, Condvar)>) -> JoinHandle<()> {
+
+    println!("===== BEGIN candidate");
+
+    thread::spawn(move || {
+
+        thread::sleep(Duration::from_secs(5));
+
+        let (lock, _cvar) = &*arc_pair;
+        let mut state_machine = lock.lock().unwrap();
+        state_machine.current_state = ElectionState::Leader;
+
+        println!("===== END candidate");
+    })
+}
+
+fn leader_behavior(_arc_pair: Arc<(Mutex<StateMachine>, Condvar)>) -> JoinHandle<()> {
+
+    println!("***** BEGIN leader");
+
+    thread::spawn(move || {
+
+        thread::sleep(Duration::from_secs(15));
+        println!("***** END leader");
+    })
+}
+
+fn follower_behavior(arc_pair: Arc<(Mutex<StateMachine>, Condvar)>) -> JoinHandle<()> {
+
+    println!("----- BEGIN follower");
+
+    thread::spawn(move || {
+
+        let (lock, cvar) = &*arc_pair;
+
+        loop {
+            println!("-- election: loop start");
+
+            let mut state_machine = lock.lock().unwrap();
+
+            println!("-- election - wait for heartbeat: {}", 0);
+            let start = Instant::now();
+
+            let timeout = state_machine.election_timout;
+            let result = cvar.wait_timeout(state_machine, Duration::from_millis(timeout)).unwrap();
+
+            let duration = start.elapsed();
+            println!("-- election - waited: {}", duration.as_millis());
+
+            state_machine = result.0;
+
+            if state_machine.heartbeat_received == true {
+                println!("-- election: received HEARTBEAT -|v-|v-|v-|v-|v-|v-|v");
+                // Reset heartbeat timeout
+                state_machine.heartbeat_received = false;
+                continue;
+            }
+            else {
+                println!("-- election - timeout! Viva la revolucion!");
+                state_machine.current_state = ElectionState::Candidate;
+                break;
+            }
+        }
+
+        println!("----- END follower");
+    })
 }
