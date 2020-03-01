@@ -24,6 +24,8 @@ pub struct Config {
     pub cluster: Cluster,
     pub election_timout: u64,
     pub election_randomness: u64,
+    pub candidate_timout: u64,
+    pub candidate_randomness: u64,
 }
 
 pub fn get_config() -> Result<Config, Box<dyn Error>> {
@@ -48,6 +50,14 @@ pub fn get_config() -> Result<Config, Box<dyn Error>> {
             .expect("Missing property: election.randomness")
             .parse()
             .expect("Invalid value for election randomness"),
+        candidate_timout: properties.get("candidate.timeout")
+            .expect("Missing property: candidate.timeout")
+            .parse()
+            .expect("Invalid value for candidate timeout"),
+        candidate_randomness: properties.get("candidate.randomness")
+            .expect("Missing property: candidate.randomness")
+            .parse()
+            .expect("Invalid value for candidate randomness"),
     })
 }
 
