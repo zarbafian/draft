@@ -111,7 +111,7 @@ pub fn send_vote(message: VoteResponse, recipient: &String, config: &Config) {
         println!("Sent vote request to {}: {}", m.addr, json);
     }
     else {
-        eprintln!("Member not found vor sending vote: {:?}", recipient);
+        eprintln!("Member not found for sending vote: {:?}", recipient);
     }
 
 }
