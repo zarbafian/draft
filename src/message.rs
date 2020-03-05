@@ -1,14 +1,15 @@
 use serde::{Serialize, Deserialize};
 use std::error::Error;
+use std::net::{UdpSocket, SocketAddr};
+use std::thread;
+
 use crate::config::{Config, Member};
-use std::net::UdpSocket;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum Type {
     AppendEntriesRequest,
     AppendEntriesResponse,
-    EntriesRequest,
-    EntriesResponse,
     VoteRequest,
     VoteResponse,
     ClientRequest,
@@ -16,21 +17,17 @@ pub enum Type {
 }
 
 pub const MESSAGE_TYPE_APPEND_ENTRIES_REQUEST: u8 = 0x01;
-pub const MESSAGE_TYPE_ENTRIES_REQUEST: u8 = 0x02;
-pub const MESSAGE_TYPE_VOTE_REQUEST: u8 = 0x04;
-pub const MESSAGE_TYPE_CLIENT_REQUEST: u8 = 0x08;
+pub const MESSAGE_TYPE_VOTE_REQUEST: u8 = 0x02;
+pub const MESSAGE_TYPE_CLIENT_REQUEST: u8 = 0x04;
 
 pub const MESSAGE_TYPE_APPEND_ENTRIES_RESPONSE: u8 = 0x11;
-pub const MESSAGE_TYPE_ENTRIES_RESPONSE: u8 = 0x12;
-pub const MESSAGE_TYPE_VOTE_RESPONSE: u8 = 0x14;
-pub const MESSAGE_TYPE_CLIENT_RESPONSE: u8 = 0x18;
+pub const MESSAGE_TYPE_VOTE_RESPONSE: u8 = 0x12;
+pub const MESSAGE_TYPE_CLIENT_RESPONSE: u8 = 0x14;
 
 pub fn get_type(code: u8) -> Option<Type> {
     match code {
         MESSAGE_TYPE_APPEND_ENTRIES_REQUEST => Some(Type::AppendEntriesRequest),
         MESSAGE_TYPE_APPEND_ENTRIES_RESPONSE => Some(Type::AppendEntriesResponse),
-        MESSAGE_TYPE_ENTRIES_REQUEST => Some(Type::EntriesRequest),
-        MESSAGE_TYPE_ENTRIES_RESPONSE => Some(Type::EntriesResponse),
         MESSAGE_TYPE_VOTE_REQUEST => Some(Type::VoteRequest),
         MESSAGE_TYPE_VOTE_RESPONSE => Some(Type::VoteResponse),
         MESSAGE_TYPE_CLIENT_REQUEST => Some(Type::ClientRequest),
@@ -58,7 +55,11 @@ pub struct AppendEntriesRequest {
     pub entries: Vec<LogEntry>,
     pub leader_commit: u64,
 }
-
+#[derive(Serialize, Deserialize, Debug)]
+pub struct AppendEntriesResponse {
+    pub term: u64,
+    pub success: bool,
+}
 #[derive(Serialize, Deserialize, Debug)]
 pub struct VoteRequest {
     pub term: u64,
@@ -66,7 +67,6 @@ pub struct VoteRequest {
     pub last_log_index: u64,
     pub last_log_term: u64,
 }
-
 #[derive(Serialize, Deserialize, Debug)]
 pub struct VoteResponse {
     pub term: u64,
@@ -77,15 +77,28 @@ pub fn broadcast(message: VoteRequest, config: &Config) {
 
     let json: String = serde_json::to_string(&message).unwrap();
 
-    let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+    let data = Arc::new([&[MESSAGE_TYPE_VOTE_REQUEST], json.as_bytes()].concat());
 
-    let data = [&[MESSAGE_TYPE_VOTE_REQUEST], json.as_bytes()].concat();
+    let mut handles = Vec::new();
 
     for member in &config.cluster.others {
 
-        let _ = socket.send_to(&data, member.addr).unwrap();
+        let address = SocketAddr::from(member.addr);
+        let json = json.clone();
+        let data = data.clone();
 
-        println!("Sent vote request to {}: {}", member.addr, json);
+        let handle = thread::spawn(move ||{
+            let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+            let _ = socket.send_to(&data, address).unwrap();
+
+            println!("Sent vote request to {}: {}", address, json);
+        });
+
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
     }
 }
 
@@ -113,5 +126,4 @@ pub fn send_vote(message: VoteResponse, recipient: &String, config: &Config) {
     else {
         eprintln!("Member not found for sending vote: {:?}", recipient);
     }
-
 }

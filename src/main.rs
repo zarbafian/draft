@@ -1,4 +1,5 @@
 mod config;
+mod server;
 mod message;
 mod raft;
 
@@ -13,7 +14,8 @@ fn main() {
     });
 
     // Run
-    raft::run(config);
+    //raft::run(config);
+    server::start(config);
 }
 
 #[cfg(test)]
