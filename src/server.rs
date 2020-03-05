@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::UdpSocket;
+use std::net::{UdpSocket};
 use std::sync::{Arc, Mutex, Condvar};
 use std::thread;
 
@@ -21,7 +21,7 @@ macro_rules! parse_json {
 
 pub fn start(config: Config) {
 
-    // Copy my address before it is moved
+    // Copy my address before it is moved in Server
     let my_address = config.cluster.me.addr.clone();
 
     println!("");
@@ -54,7 +54,6 @@ pub fn start(config: Config) {
                 // Copy data from buffer so the buffer can be used for another request
                 let mut data = [0u8; 65535];
                 data.copy_from_slice(&buf[..]);
-
 
                 let thread_pair = shared_pair.clone();
 

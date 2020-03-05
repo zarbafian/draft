@@ -1,7 +1,6 @@
 mod config;
 mod server;
 mod message;
-mod raft;
 
 use std::process;
 
@@ -13,8 +12,7 @@ fn main() {
         process::exit(1)
     });
 
-    // Run
-    //raft::run(config);
+    // Run node
     server::start(config);
 }
 
