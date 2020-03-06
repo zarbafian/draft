@@ -182,16 +182,19 @@ impl Server {
             ElectionState::Follower => {
                 // TODO: check validity
                 self.reset_election_timeout = true;
+                self.voted_for = None;
                 true
             },
             ElectionState::Candidate => {
                 // TODO: check validity
                 // If request.term > current_term then convert to follower
+                self.voted_for = None;
                 true
             },
             ElectionState::Leader => {
                 // TODO: check validity
                 // If request.term > current_term then convert to follower
+                self.voted_for = None;
                 true
             }
         }
@@ -203,6 +206,7 @@ impl Server {
         if let Some(votee) = self.voted_for.borrow() {
             if !votee.eq(&request.candidate_id) {
                 // Already voted for someone else
+                info!("already voted for: {}", votee);
                 return false;
             }
         }
@@ -278,7 +282,6 @@ impl Server {
         }
     }
 }
-
 
 fn handle_election_timeout(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
 
