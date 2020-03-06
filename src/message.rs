@@ -2,9 +2,10 @@ use serde::{Serialize, Deserialize};
 use std::error::Error;
 use std::net::{UdpSocket, SocketAddr};
 use std::thread;
+use std::sync::Arc;
+use log::{debug};
 
 use crate::config::{Config};
-use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum Type {
@@ -78,7 +79,6 @@ pub struct VoteResponse {
 
 pub fn broadcast_vote_request(message: VoteRequest, config: &Config) {
 
-    println!("broadcast_vote_request");
     let json: String = serde_json::to_string(&message).unwrap();
 
     broadcast(MESSAGE_TYPE_VOTE_REQUEST, json, config);
@@ -86,7 +86,6 @@ pub fn broadcast_vote_request(message: VoteRequest, config: &Config) {
 
 pub fn broadcast_append_entries(message: AppendEntriesRequest, config: &Config) {
 
-    println!("broadcast_append_entries");
     let json: String = serde_json::to_string(&message).unwrap();
 
     broadcast(MESSAGE_TYPE_APPEND_ENTRIES_REQUEST, json, config);
@@ -104,12 +103,12 @@ pub fn broadcast(message_type: u8, json: String, config: &Config) {
         let json = json.clone();
         let data = data.clone();
 
-        let handle = thread::spawn(move ||{
+        let handle = thread::Builder::new().name("broadcast".into()).spawn(move ||{
             let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
             let _ = socket.send_to(&data, address).unwrap();
 
-            println!("Sent vote request to {}: {}", address, json);
-        });
+            debug!("Sent vote request to {}: {}", address, json);
+        }).unwrap();
 
         handles.push(handle);
     }

@@ -12,6 +12,12 @@ fn main() {
         process::exit(1)
     });
 
+    // Configure logging
+    config::configure_logging(config.log_file.clone(), config.log_level.clone()).unwrap_or_else(|err| {
+        eprintln!("Error with loggin configuration: {}", err);
+        process::exit(1)
+    });
+
     // Run node
     server::start(config);
 }
