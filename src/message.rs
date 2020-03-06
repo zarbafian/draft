@@ -43,6 +43,8 @@ trait Message<T> {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct LogEntry {
+    pub term: u64,
+    pub index: u64,
     pub data: String,
 }
 
@@ -69,8 +71,9 @@ pub struct VoteRequest {
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct VoteResponse {
+    pub voter_id: String,
     pub term: u64,
-    pub term_granted: bool,
+    pub vote_granted: bool,
 }
 
 pub fn broadcast(message: VoteRequest, config: &Config) {
