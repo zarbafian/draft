@@ -22,7 +22,7 @@ pub struct Cluster {
 #[derive(Debug)]
 pub struct Config {
     pub cluster: Cluster,
-    pub election_timout: u64,
+    pub election_timeout: u64,
     pub election_randomness: u64,
 }
 
@@ -40,7 +40,7 @@ pub fn get_config() -> Result<Config, Box<dyn Error>> {
 
     Ok(Config{
         cluster,
-        election_timout: properties.get("election.timeout")
+        election_timeout: properties.get("election.timeout")
             .expect("Missing property: election.timeout")
             .parse()
             .expect("Invalid value for election timeout"),

@@ -3,7 +3,7 @@ use std::error::Error;
 use std::net::{UdpSocket, SocketAddr};
 use std::thread;
 
-use crate::config::{Config, Member};
+use crate::config::{Config};
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -76,11 +76,25 @@ pub struct VoteResponse {
     pub vote_granted: bool,
 }
 
-pub fn broadcast(message: VoteRequest, config: &Config) {
+pub fn broadcast_vote_request(message: VoteRequest, config: &Config) {
 
+    println!("broadcast_vote_request");
     let json: String = serde_json::to_string(&message).unwrap();
 
-    let data = Arc::new([&[MESSAGE_TYPE_VOTE_REQUEST], json.as_bytes()].concat());
+    broadcast(MESSAGE_TYPE_VOTE_REQUEST, json, config);
+}
+
+pub fn broadcast_append_entries(message: AppendEntriesRequest, config: &Config) {
+
+    println!("broadcast_append_entries");
+    let json: String = serde_json::to_string(&message).unwrap();
+
+    broadcast(MESSAGE_TYPE_APPEND_ENTRIES_REQUEST, json, config);
+}
+
+pub fn broadcast(message_type: u8, json: String, config: &Config) {
+
+    let data = Arc::new([&[message_type], json.as_bytes()].concat());
 
     let mut handles = Vec::new();
 
@@ -105,7 +119,7 @@ pub fn broadcast(message: VoteRequest, config: &Config) {
     }
 }
 
-pub fn send_vote(message: VoteResponse, recipient: &String, config: &Config) {
+pub fn send_vote(message: VoteResponse, recipient: String) {
 
     let json: String = serde_json::to_string(&message).unwrap();
 
@@ -113,20 +127,5 @@ pub fn send_vote(message: VoteResponse, recipient: &String, config: &Config) {
 
     let data = [&[MESSAGE_TYPE_VOTE_RESPONSE], json.as_bytes()].concat();
 
-    let mut member: Option<&Member> = None;
-
-    for other in &config.cluster.others {
-        if other.addr.to_string().eq(recipient) {
-            member = Some(other);
-            break;
-        }
-    }
-
-    if let Some(m) = member {
-        socket.send_to(&data, m.addr).unwrap();
-        println!("Sent vote request to {}: {}", m.addr, json);
-    }
-    else {
-        eprintln!("Member not found for sending vote: {:?}", recipient);
-    }
+    socket.send_to(&data, recipient).unwrap();
 }
