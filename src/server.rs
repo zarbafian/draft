@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 use std::borrow::Borrow;
 use log::{trace, debug, info, error};
 
+use crate::query;
 use crate::config::{Config, Member};
-use crate::message::{self, AppendEntriesRequest, VoteRequest, LogEntry, VoteResponse, broadcast_append_entries};
+use crate::message::{self, AppendEntriesRequest, VoteRequest, LogEntry, VoteResponse, broadcast_append_entries, AppendEntriesResponse, ClientRequest, ClientResponse};
 
 macro_rules! parse_json {
     ($x:expr) => {
@@ -83,6 +84,15 @@ pub fn start(config: Config) {
                                         timeout_cvar.notify_one();
                                     }
                                 },
+                                message::Type::AppendEntriesResponse => {
+                                    let message: AppendEntriesResponse = parse_json!(&json);
+                                    debug!("Received message: {:?}", message);
+
+                                    let (lock, _timeout_cvar) = &*thread_pair;
+                                    let mut server = lock.lock().unwrap();
+
+                                    server.apply_append_entries_response(message);
+                                },
                                 message::Type::VoteRequest => {
                                     let message: VoteRequest = parse_json!(&json);
                                     debug!("Received message: {:?}", message);
@@ -106,7 +116,17 @@ pub fn start(config: Config) {
                                     server.apply_vote_response(message);
                                     timeout_cvar.notify_one();
                                 }
-                                _ => unimplemented!()
+                                message::Type::ClientRequest => {
+                                    let message: ClientRequest = parse_json!(&json);
+                                    debug!("Received message: {:?}", message);
+
+                                    let (lock, _timeout_cvar) = &*thread_pair;
+                                    let mut server = lock.lock().unwrap();
+
+                                    server.apply_client_request(message);
+                                    //timeout_cvar.notify_one();
+                                },
+                                _ => error!("Unhandled message type: {:?}", message_type)
                             }
 
                         }
@@ -127,6 +147,7 @@ enum ElectionState {
 struct Server {
     config: Config,
 
+    leader_id: Option<String>,
     reset_election_timeout: bool,
 
     state: ElectionState,
@@ -155,6 +176,7 @@ impl Server {
 
         Server {
             config,
+            leader_id: None,
             reset_election_timeout: true,
             state: ElectionState::Follower,
             current_votes: HashSet::new(),
@@ -176,13 +198,19 @@ impl Server {
         self.current_votes.len() as f64 > ((self.config.cluster.others.len() + 1) as f64 / 2 as f64)
     }
 
-    fn apply_append_entries_request(&mut self, _request: AppendEntriesRequest) -> bool {
+    fn apply_append_entries_request(&mut self, request: AppendEntriesRequest) -> bool {
 
         match self.state {
             ElectionState::Follower => {
+                if request.term < self.current_term {
+                    // Bad term
+                    return false;
+                }
+
                 // TODO: check validity
                 self.reset_election_timeout = true;
                 self.voted_for = None;
+                self.leader_id = Some(request.leader_id);
                 true
             },
             ElectionState::Candidate => {
@@ -198,6 +226,10 @@ impl Server {
                 true
             }
         }
+    }
+
+    fn apply_append_entries_response(&mut self, _response: AppendEntriesResponse) {
+        unimplemented!();
     }
 
     /// Handle a vote request
@@ -236,7 +268,7 @@ impl Server {
                 let vote_granted = true;
                 thread::Builder::new().name("send granted vote".into()).spawn(move || {
                     // Send vote
-                    message::send_vote(VoteResponse {
+                    message::send_vote_response(VoteResponse {
                         voter_id,
                         term,
                         vote_granted,
@@ -254,7 +286,7 @@ impl Server {
                 let vote_granted = false;
                 thread::Builder::new().name("send rejected vote".into()).spawn(move || {
                     // Send vote
-                    message::send_vote(VoteResponse {
+                    message::send_vote_response(VoteResponse {
                         voter_id,
                         term,
                         vote_granted,
@@ -281,6 +313,54 @@ impl Server {
             // TODO
         }
     }
+
+    /// Handle client request
+    fn apply_client_request(&mut self, message: ClientRequest) {
+
+        match self.state {
+            ElectionState::Leader => {
+                // Handle message,
+            },
+            ElectionState::Follower => {
+                // Redirect to leader
+                if let Some(leader) = self.leader_id.borrow() {
+                    // TODO: build result
+                    let result = query::Result::new(query::QUERY_RESULT_REDIRECT, "leader redirect".to_string(), leader.to_string());
+                    let response = ClientResponse{
+                        server_id: self.id(),
+                        client_id: message.client_id.clone(),
+                        request_id: message.request_id.clone(),
+                        result,
+                    };
+                    send_client_response(message, response);
+                }
+                else {
+                    let result = query::Result::new(query::QUERY_RESULT_RETRY, "leader unknown".to_string(), "".to_string());
+                    let response = ClientResponse{
+                        server_id: self.id(),
+                        client_id: message.client_id.clone(),
+                        request_id: message.request_id.clone(),
+                        result,
+                    };
+                    send_client_response(message, response);
+                }
+            }
+            ElectionState::Candidate => {
+                // No leader available
+            }
+        }
+    }
+}
+
+fn send_client_response(request: ClientRequest, response: ClientResponse) {
+
+    thread::Builder::new()
+        .name("client response".into())
+        .spawn(move || {
+            debug!("Sent client response to {:?}: {:?}", request.client_id, response);
+            message::send_client_response(response, request.client_id);
+        })
+        .unwrap();
 }
 
 fn handle_election_timeout(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
@@ -347,7 +427,6 @@ fn handle_election_won(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
 }
 
 fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
-    // TODO: send append entries
     thread::Builder::new()
         .name(String::from("leader"))
         .spawn(move || {

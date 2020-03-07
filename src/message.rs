@@ -1,11 +1,11 @@
 use serde::{Serialize, Deserialize};
-use std::error::Error;
 use std::net::{UdpSocket, SocketAddr};
 use std::thread;
 use std::sync::Arc;
 use log::{debug};
 
 use crate::config::{Config};
+use crate::query;
 
 #[derive(Debug)]
 pub enum Type {
@@ -37,18 +37,25 @@ pub fn get_type(code: u8) -> Option<Type> {
     }
 }
 
-trait Message<T> {
-    fn to_json(&self) -> Result<String, Box<dyn Error>>;
-    fn from_json(json: &String) -> Result<T, Box<dyn Error>>;
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 pub struct LogEntry {
     pub term: u64,
     pub index: u64,
     pub data: String,
 }
-
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ClientRequest {
+    pub client_id: String,
+    pub request_id: String,
+    pub entry: query::QueryRaw,
+}
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ClientResponse {
+    pub server_id: String,
+    pub client_id: String,
+    pub request_id: String,
+    pub result: query::Result,
+}
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AppendEntriesRequest {
     pub term: u64,
@@ -118,13 +125,25 @@ pub fn broadcast(message_type: u8, json: String, config: &Config) {
     }
 }
 
-pub fn send_vote(message: VoteResponse, recipient: String) {
+pub fn send_client_response(message: ClientResponse, recipient: String) {
 
     let json: String = serde_json::to_string(&message).unwrap();
 
+    send(MESSAGE_TYPE_CLIENT_RESPONSE, json, recipient);
+}
+
+pub fn send_vote_response(message: VoteResponse, recipient: String) {
+
+    let json: String = serde_json::to_string(&message).unwrap();
+
+    send(MESSAGE_TYPE_VOTE_RESPONSE, json, recipient);
+}
+
+pub fn send(message_type: u8, json: String, recipient: String) {
+
     let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
 
-    let data = [&[MESSAGE_TYPE_VOTE_RESPONSE], json.as_bytes()].concat();
+    let data = [&[message_type], json.as_bytes()].concat();
 
     socket.send_to(&data, recipient).unwrap();
 }

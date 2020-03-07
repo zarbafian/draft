@@ -1,6 +1,7 @@
 mod config;
 mod server;
 mod message;
+mod query;
 
 use std::process;
 
