@@ -6,6 +6,8 @@ use log::{debug};
 
 use crate::config::{Config};
 use crate::query;
+use std::error::Error;
+use crate::query::Query;
 
 #[derive(Debug)]
 pub enum Type {
@@ -36,12 +38,18 @@ pub fn get_type(code: u8) -> Option<Type> {
         _ => None
     }
 }
+pub fn deserialize<'a, T: Deserialize<'a>>(json: &'a String) -> Result<T, Box<dyn Error>> {
+    match serde_json::from_str(json) {
+        Ok(o) => Ok(o),
+        Err(e) => Err(e)?,
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct LogEntry {
     pub term: u64,
     pub index: u64,
-    pub data: String,
+    pub data: Query,
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClientRequest {
@@ -114,7 +122,7 @@ pub fn broadcast(message_type: u8, json: String, config: &Config) {
             let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
             let _ = socket.send_to(&data, address).unwrap();
 
-            debug!("Sent vote request to {}: {}", address, json);
+            debug!("Sent message {} to {}: {}", message_type, address, json);
         }).unwrap();
 
         handles.push(handle);

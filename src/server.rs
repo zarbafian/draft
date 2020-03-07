@@ -10,10 +10,11 @@ use log::{trace, debug, info, error};
 use crate::query;
 use crate::config::{Config, Member};
 use crate::message::{self, AppendEntriesRequest, VoteRequest, LogEntry, VoteResponse, broadcast_append_entries, AppendEntriesResponse, ClientRequest, ClientResponse};
+use crate::query::Query;
 
 macro_rules! parse_json {
     ($x:expr) => {
-        match serde_json::from_str($x) {
+        match message::deserialize($x) {
             Ok(r) => r,
             Err(err) => {
                 error!("Could not parse JSON message: {}", err);
@@ -317,46 +318,70 @@ impl Server {
     /// Handle client request
     fn apply_client_request(&mut self, message: ClientRequest) {
 
+        info!("--- apply_client_request");
+
         match self.state {
             ElectionState::Leader => {
-                // Handle message,
-            },
-            ElectionState::Follower => {
-                // Redirect to leader
-                if let Some(leader) = self.leader_id.borrow() {
-                    // TODO: build result
-                    let result = query::Result::new(query::QUERY_RESULT_REDIRECT, "leader redirect".to_string(), leader.to_string());
-                    let response = ClientResponse{
-                        server_id: self.id(),
-                        client_id: message.client_id.clone(),
-                        request_id: message.request_id.clone(),
-                        result,
-                    };
-                    send_client_response(message, response);
+                // Handle message
+                info!("--- apply_client_request: LEADER");
+                if let Some(q) = message.entry.to_query() {
+                    // Valid message
+                    self.append_log_entries(vec![q]);
+
+                    let result = query::Result::new(query::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
+                    send_client_response(self.id(), message, result);
                 }
                 else {
+                    // Invalid message
+                    info!("invalid query: {:?}", message.entry);
+                    let result = query::Result::new(query::QUERY_RESULT_INVALID_QUERY, "invalid query".to_string(), "".to_string());
+                    send_client_response(self.id(), message, result);
+                }
+            },
+            ElectionState::Follower => {
+                if let Some(leader) = self.leader_id.borrow() {
+                    // Redirect to leader by sending its address
+                    let result = query::Result::new(query::QUERY_RESULT_REDIRECT, "leader redirect".to_string(), leader.to_string());
+                    send_client_response(self.id(), message, result);
+                }
+                else {
+                    // Currently no leader to handle the request
                     let result = query::Result::new(query::QUERY_RESULT_RETRY, "leader unknown".to_string(), "".to_string());
-                    let response = ClientResponse{
-                        server_id: self.id(),
-                        client_id: message.client_id.clone(),
-                        request_id: message.request_id.clone(),
-                        result,
-                    };
-                    send_client_response(message, response);
+                    send_client_response(self.id(), message, result);
                 }
             }
             ElectionState::Candidate => {
-                // No leader available
+                // Leader offline, proceeding with election
+                let result = query::Result::new(query::QUERY_RESULT_CANDIDATE, "leader offline".to_string(), "".to_string());
+                send_client_response(self.id(), message, result);
             }
+        }
+    }
+
+    fn append_log_entries(&mut self, queries: Vec<Query>) {
+
+        for q in queries {
+            // TODO: handle state machine
+            info!("will append log: {:?}", q);
+            self.log.push(LogEntry {
+                term: self.current_term,
+                index: self.log.len() as u64 + 1,
+                data: q,
+            });
         }
     }
 }
 
-fn send_client_response(request: ClientRequest, response: ClientResponse) {
-
+fn send_client_response(server_id: String, request: ClientRequest, result: query::Result) {
     thread::Builder::new()
         .name("client response".into())
         .spawn(move || {
+            let response = ClientResponse {
+                server_id,
+                client_id: request.client_id.clone(),
+                request_id: request.request_id.clone(),
+                result
+            };
             debug!("Sent client response to {:?}: {:?}", request.client_id, response);
             message::send_client_response(response, request.client_id);
         })
@@ -432,7 +457,7 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
         .spawn(move || {
             info!("started");
             loop {
-                let (lock, _timeout_cvar) = &*timeout_pair.clone();
+                let (lock, timeout_cvar) = &*timeout_pair.clone();
                 let server = lock.lock().unwrap();
 
                 broadcast_append_entries(AppendEntriesRequest{
@@ -446,7 +471,10 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
 
                 let sleep = (server.config.election_timeout as f64 / 2 as f64) as u64;
                 debug!("Leader will sleep for {} ms", sleep);
-                thread::sleep(Duration::from_millis(sleep));
+
+                // TODO: use another condvar?
+                let _ = timeout_cvar.wait_timeout(server, Duration::from_millis(sleep));
+                //thread::sleep(Duration::from_millis(sleep));
             }
         })
         .unwrap();
