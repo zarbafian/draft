@@ -38,6 +38,12 @@ pub fn get_type(code: u8) -> Option<Type> {
         _ => None
     }
 }
+pub fn serialize<T: Serialize>(t: &T) -> Result<String, Box<dyn Error>> {
+    match serde_json::to_string(t) {
+        Ok(o) => Ok(o),
+        Err(e) => Err(e)?,
+    }
+}
 pub fn deserialize<'a, T: Deserialize<'a>>(json: &'a String) -> Result<T, Box<dyn Error>> {
     match serde_json::from_str(json) {
         Ok(o) => Ok(o),
@@ -45,17 +51,17 @@ pub fn deserialize<'a, T: Deserialize<'a>>(json: &'a String) -> Result<T, Box<dy
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LogEntry {
-    pub term: u64,
-    pub index: u64,
+    pub term: usize,
+    pub index: usize,
     pub data: Query,
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClientRequest {
     pub client_id: String,
     pub request_id: String,
-    pub entry: query::QueryRaw,
+    pub entry: query::Query,
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClientResponse {
@@ -66,42 +72,42 @@ pub struct ClientResponse {
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AppendEntriesRequest {
-    pub term: u64,
+    pub term: usize,
     pub leader_id: String,
-    pub prev_log_index: u64,
-    pub prev_log_term: u64,
+    pub prev_log_index: usize,
+    pub prev_log_term: usize,
     pub entries: Vec<LogEntry>,
-    pub leader_commit: u64,
+    pub leader_commit: usize,
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AppendEntriesResponse {
-    pub term: u64,
+    pub term: usize,
     pub success: bool,
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct VoteRequest {
-    pub term: u64,
+    pub term: usize,
     pub candidate_id: String,
-    pub last_log_index: u64,
-    pub last_log_term: u64,
+    pub last_log_index: usize,
+    pub last_log_term: usize,
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct VoteResponse {
     pub voter_id: String,
-    pub term: u64,
+    pub term: usize,
     pub vote_granted: bool,
 }
 
 pub fn broadcast_vote_request(message: VoteRequest, config: &Config) {
 
-    let json: String = serde_json::to_string(&message).unwrap();
+    let json: String = serialize(&message).unwrap();
 
     broadcast(MESSAGE_TYPE_VOTE_REQUEST, json, config);
 }
 
 pub fn broadcast_append_entries(message: AppendEntriesRequest, config: &Config) {
 
-    let json: String = serde_json::to_string(&message).unwrap();
+    let json: String = serialize(&message).unwrap();
 
     broadcast(MESSAGE_TYPE_APPEND_ENTRIES_REQUEST, json, config);
 }
@@ -135,16 +141,23 @@ pub fn broadcast(message_type: u8, json: String, config: &Config) {
 
 pub fn send_client_response(message: ClientResponse, recipient: String) {
 
-    let json: String = serde_json::to_string(&message).unwrap();
+    let json: String = serialize(&message).unwrap();
 
     send(MESSAGE_TYPE_CLIENT_RESPONSE, json, recipient);
 }
 
 pub fn send_vote_response(message: VoteResponse, recipient: String) {
 
-    let json: String = serde_json::to_string(&message).unwrap();
+    let json: String = serialize(&message).unwrap();
 
     send(MESSAGE_TYPE_VOTE_RESPONSE, json, recipient);
+}
+
+pub fn send_append_entries(message: AppendEntriesRequest, recipient: String) {
+
+    let json: String = serialize(&message).unwrap();
+
+    send(MESSAGE_TYPE_APPEND_ENTRIES_REQUEST, json, recipient);
 }
 
 pub fn send(message_type: u8, json: String, recipient: String) {

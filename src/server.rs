@@ -9,7 +9,7 @@ use log::{trace, debug, info, error};
 
 use crate::query;
 use crate::config::{Config, Member};
-use crate::message::{self, AppendEntriesRequest, VoteRequest, LogEntry, VoteResponse, broadcast_append_entries, AppendEntriesResponse, ClientRequest, ClientResponse};
+use crate::message::{self, AppendEntriesRequest, VoteRequest, LogEntry, VoteResponse, AppendEntriesResponse, ClientRequest, ClientResponse};
 use crate::query::Query;
 
 macro_rules! parse_json {
@@ -44,6 +44,8 @@ pub fn start(config: Config) {
     let mut buf = [0u8; 65535];
 
     // Shared data: server state machine + condition variable election timeout
+    // Document use with the naming:
+    // - NAME-ACTION
     let shared_pair = Arc::new((Mutex::new(server), Condvar::new()));
     let timeout_pair = shared_pair.clone();
 
@@ -82,6 +84,7 @@ pub fn start(config: Config) {
 
                                     if server.apply_append_entries_request(message) {
                                         // Received a heartbeat: reset election timeout, step down from candidate or leader
+                                        server.reset_election_timeout = true;
                                         timeout_cvar.notify_one();
                                     }
                                 },
@@ -104,6 +107,7 @@ pub fn start(config: Config) {
 
                                     if server.apply_vote_request(message) {
                                         // Sent a vote
+                                        server.reset_election_timeout = true;
                                         timeout_cvar.notify_one();
                                     }
                                 },
@@ -121,11 +125,14 @@ pub fn start(config: Config) {
                                     let message: ClientRequest = parse_json!(&json);
                                     debug!("Received message: {:?}", message);
 
-                                    let (lock, _timeout_cvar) = &*thread_pair;
+                                    let (lock, timeout_cvar) = &*thread_pair;
                                     let mut server = lock.lock().unwrap();
 
-                                    server.apply_client_request(message);
-                                    //timeout_cvar.notify_one();
+                                    if server.apply_client_request(message) {
+                                        // Client request received, replicate
+                                        server.client_request_received = true;
+                                        timeout_cvar.notify_one();
+                                    }
                                 },
                                 _ => error!("Unhandled message type: {:?}", message_type)
                             }
@@ -150,17 +157,18 @@ struct Server {
 
     leader_id: Option<String>,
     reset_election_timeout: bool,
+    client_request_received: bool,
 
     state: ElectionState,
     current_votes: HashSet<String>,
 
-    current_term: u64,
+    current_term: usize,
     voted_for: Option<String>,
-    commit_index: u64,
-    last_applied: u64,
+    commit_index: usize,
+    last_applied: usize,
 
-    next_index: HashMap<String, u64>,
-    match_index: HashMap<String, u64>,
+    next_index: HashMap<String, usize>,
+    match_index: HashMap<String, usize>,
 
     log: Vec<LogEntry>,
 }
@@ -169,8 +177,8 @@ impl Server {
     /// Create a new server
     fn new(config: Config) -> Server {
 
-        // Initialize indices to 0
-        let zeros_next = vec![0; config.cluster.others.len()];
+        // Initialize indices of each other node to 0
+        let zeros_next = vec![1; config.cluster.others.len()];
         let zeros_match = vec![0; config.cluster.others.len()];
         let next_index = config.cluster.others.iter().map(|o| o.addr.to_string()).zip(zeros_next).collect();
         let match_index = config.cluster.others.iter().map(|o| o.addr.to_string()).zip(zeros_match).collect();
@@ -178,7 +186,8 @@ impl Server {
         Server {
             config,
             leader_id: None,
-            reset_election_timeout: true,
+            reset_election_timeout: false,
+            client_request_received: false,
             state: ElectionState::Follower,
             current_votes: HashSet::new(),
             current_term: 0,
@@ -199,9 +208,15 @@ impl Server {
         self.current_votes.len() as f64 > ((self.config.cluster.others.len() + 1) as f64 / 2 as f64)
     }
 
+    /// Returns `true` if the message was accepted.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - An append entries request from the leader
+    ///
     fn apply_append_entries_request(&mut self, request: AppendEntriesRequest) -> bool {
 
-        match self.state {
+        let accepted = match self.state {
             ElectionState::Follower => {
                 if request.term < self.current_term {
                     // Bad term
@@ -209,96 +224,107 @@ impl Server {
                 }
 
                 // TODO: check validity
-                self.reset_election_timeout = true;
-                self.voted_for = None;
-                self.leader_id = Some(request.leader_id);
                 true
             },
             ElectionState::Candidate => {
                 // TODO: check validity
                 // If request.term > current_term then convert to follower
-                self.voted_for = None;
                 true
             },
             ElectionState::Leader => {
                 // TODO: check validity
                 // If request.term > current_term then convert to follower
-                self.voted_for = None;
                 true
             }
+        };
+
+        if accepted {
+            self.voted_for = None;
+            self.leader_id = Some(request.leader_id);
+            // TODO: clear other fields
         }
+
+        accepted
     }
 
     fn apply_append_entries_response(&mut self, _response: AppendEntriesResponse) {
         unimplemented!();
     }
 
-    /// Handle a vote request
+    /// Returns `true` if the vote request was accepted and a vote was send.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - A vote request from a candidate
+    ///
     fn apply_vote_request(&mut self, request: VoteRequest) -> bool{
 
-        if let Some(votee) = self.voted_for.borrow() {
-            if !votee.eq(&request.candidate_id) {
-                // Already voted for someone else
-                info!("already voted for: {}", votee);
-                return false;
+        // Only vote as a follower
+        if let ElectionState::Follower = self.state {
+
+            if let Some(votee) = self.voted_for.borrow() {
+                if !votee.eq(&request.candidate_id) {
+                    // Already voted for someone else
+                    info!("already voted for: {}", votee);
+                    return false;
+                }
             }
-        }
 
-        // Find votee
-        let mut votee: Option<Member> = None;
+            // Find votee
+            let mut votee: Option<Member> = None;
 
-        for other in self.config.cluster.others.iter() {
-            if other.addr.to_string().eq(&request.candidate_id) {
-                votee = Some(Member{addr: other.addr.clone()});
-                break;
+            for other in self.config.cluster.others.iter() {
+                if other.addr.to_string().eq(&request.candidate_id) {
+                    votee = Some(Member { addr: other.addr.clone() });
+                    break;
+                }
             }
-        }
 
-        if let Some(m) = votee {
+            if let Some(m) = votee {
 
-            // TODO: check eligibility
-            let vote_request_accepted = true;
+                // TODO: check eligibility
+                let vote_request_accepted = true;
 
-            if vote_request_accepted {
-                info!("Vote accepted: {:?}", request);
-                self.voted_for = Some(request.candidate_id.clone());
-                self.reset_election_timeout = true;
+                if vote_request_accepted {
+                    info!("Vote accepted: {:?}", request);
+                    self.voted_for = Some(request.candidate_id.clone());
 
-                let voter_id = self.id();
-                let term = self.current_term;
-                let vote_granted = true;
-                thread::Builder::new().name("send granted vote".into()).spawn(move || {
-                    // Send vote
-                    message::send_vote_response(VoteResponse {
-                        voter_id,
-                        term,
-                        vote_granted,
-                    }, m.addr.to_string());
-                }).unwrap();
-                // Vote sent
-                true
-
-            }
-            else {
-                // Vote request rejected
-                info!("Vote rejected: {:?}", request);
-                let voter_id = self.id();
-                let term = self.current_term;
-                let vote_granted = false;
-                thread::Builder::new().name("send rejected vote".into()).spawn(move || {
-                    // Send vote
-                    message::send_vote_response(VoteResponse {
-                        voter_id,
-                        term,
-                        vote_granted,
-                    }, m.addr.to_string());
-                }).unwrap();
+                    let voter_id = self.id();
+                    let term = self.current_term;
+                    let vote_granted = true;
+                    thread::Builder::new().name("send granted vote".into()).spawn(move || {
+                        // Send vote
+                        message::send_vote_response(VoteResponse {
+                            voter_id,
+                            term,
+                            vote_granted,
+                        }, m.addr.to_string());
+                    }).unwrap();
+                    // Vote sent
+                    true
+                } else {
+                    // Vote request rejected
+                    info!("Vote rejected: {:?}", request);
+                    let voter_id = self.id();
+                    let term = self.current_term;
+                    let vote_granted = false;
+                    thread::Builder::new().name("send rejected vote".into()).spawn(move || {
+                        // Send vote
+                        message::send_vote_response(VoteResponse {
+                            voter_id,
+                            term,
+                            vote_granted,
+                        }, m.addr.to_string());
+                    }).unwrap();
+                    false
+                }
+            } else {
+                // Candidate not found
+                error!("Member not found for sending vote: {:?}", request.candidate_id);
                 false
             }
-        }
-        else {
-            // Candidate not found
-            error!("Member not found for sending vote: {:?}", request.candidate_id);
+        } else {
+        //Candidate or leader
             false
         }
     }
@@ -312,48 +338,45 @@ impl Server {
         }
         else {
             // TODO
+            // update term
         }
     }
 
-    /// Handle client request
-    fn apply_client_request(&mut self, message: ClientRequest) {
-
-        info!("--- apply_client_request");
+    /// Returns `true` if valid client request was received and must be replicated.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - A request from a client
+    ///
+    fn apply_client_request(&mut self, message: ClientRequest) -> bool {
 
         match self.state {
             ElectionState::Leader => {
                 // Handle message
-                info!("--- apply_client_request: LEADER");
-                if let Some(q) = message.entry.to_query() {
-                    // Valid message
-                    self.append_log_entries(vec![q]);
-
-                    let result = query::Result::new(query::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
-                    send_client_response(self.id(), message, result);
-                }
-                else {
-                    // Invalid message
-                    info!("invalid query: {:?}", message.entry);
-                    let result = query::Result::new(query::QUERY_RESULT_INVALID_QUERY, "invalid query".to_string(), "".to_string());
-                    send_client_response(self.id(), message, result);
-                }
+                self.append_log_entries(vec![message.entry.clone()]);
+                let result = query::Result::new(query::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
+                send_client_response(self.id(), message, result);
+                true
             },
             ElectionState::Follower => {
                 if let Some(leader) = self.leader_id.borrow() {
                     // Redirect to leader by sending its address
                     let result = query::Result::new(query::QUERY_RESULT_REDIRECT, "leader redirect".to_string(), leader.to_string());
                     send_client_response(self.id(), message, result);
+                    false
                 }
                 else {
                     // Currently no leader to handle the request
                     let result = query::Result::new(query::QUERY_RESULT_RETRY, "leader unknown".to_string(), "".to_string());
                     send_client_response(self.id(), message, result);
+                    false
                 }
             }
             ElectionState::Candidate => {
                 // Leader offline, proceeding with election
                 let result = query::Result::new(query::QUERY_RESULT_CANDIDATE, "leader offline".to_string(), "".to_string());
                 send_client_response(self.id(), message, result);
+                false
             }
         }
     }
@@ -361,13 +384,14 @@ impl Server {
     fn append_log_entries(&mut self, queries: Vec<Query>) {
 
         for q in queries {
-            // TODO: handle state machine
             info!("will append log: {:?}", q);
             self.log.push(LogEntry {
                 term: self.current_term,
-                index: self.log.len() as u64 + 1,
+                index: self.log.len() as usize + 1,
                 data: q,
             });
+            // TODO: apply to state machine
+            self.last_applied +=1;
         }
     }
 }
@@ -458,23 +482,70 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
             info!("started");
             loop {
                 let (lock, timeout_cvar) = &*timeout_pair.clone();
-                let server = lock.lock().unwrap();
+                let mut server = lock.lock().unwrap();
 
-                broadcast_append_entries(AppendEntriesRequest{
-                    term: server.current_term,
-                    leader_id: server.id(),
-                    prev_log_index: 0, // TODO
-                    prev_log_term: 0, // TODO
-                    entries: vec![], // TODO
-                    leader_commit: 0, // TODO
-                }, &server.config);
+                // Set maximum inactivity from leader to a percentage of the election timeout
+                // TODO: fine tune
+                let pct: f64 = 0.6;
+                let max_inactivity = (server.config.election_timeout as f64 * pct) as u64;
 
-                let sleep = (server.config.election_timeout as f64 / 2 as f64) as u64;
-                debug!("Leader will sleep for {} ms", sleep);
+                let result = timeout_cvar.wait_timeout(server, Duration::from_millis(max_inactivity)).unwrap();
 
-                // TODO: use another condvar?
-                let _ = timeout_cvar.wait_timeout(server, Duration::from_millis(sleep));
-                //thread::sleep(Duration::from_millis(sleep));
+                server = result.0;
+
+                if server.client_request_received {
+                    // Client request received, replicate
+                    server.client_request_received = false;
+                    for (address, next_index) in server.next_index.iter() {
+
+                        let recipient = address.clone();
+                        let term = server.current_term;
+                        let leader_id = server.id();
+                        let (prev_log_index, prev_log_term) = match server.log.get(next_index - 1) {
+                            Some(e) => (e.index, e.term),
+                            None => (0, 0),
+                        };
+
+                        let mut entries: Vec<LogEntry> = Vec::new();
+
+                        let from = *next_index;
+                        let to = server.log.len();
+
+                        for i in from..to {
+                            // i - 1 as arrays are zero-based and Raft first message is at index 0
+                            entries.push(server.log[i - 1].clone());
+                        }
+
+                        let leader_commit = server.commit_index;
+
+                        thread::Builder::new().name("replicate log".into()).spawn(move ||{
+                            message::send_append_entries(AppendEntriesRequest{
+                                term,
+                                leader_id,
+                                prev_log_index,
+                                prev_log_term,
+                                entries,
+                                leader_commit,
+                            }, recipient);
+                        }).unwrap();
+
+                    }
+                }
+                else {
+                    // Send a heartbeat to the network to avoid election timeout
+                    let (prev_log_index, prev_log_term) = match server.log.last() {
+                        Some(e) => (e.index, e.term),
+                        None => (0, 0),
+                    };
+                    message::broadcast_append_entries(AppendEntriesRequest{
+                        term: server.current_term,
+                        leader_id: server.id(),
+                        prev_log_index,
+                        prev_log_term,
+                        entries: vec![],
+                        leader_commit: server.commit_index,
+                    }, &server.config);
+                }
             }
         })
         .unwrap();
