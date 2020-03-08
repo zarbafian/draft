@@ -508,12 +508,14 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
 
                         let mut entries: Vec<LogEntry> = Vec::new();
 
-                        let from = *next_index;
+                        // Minus 1 as arrays are zero-based and Raft first message is at index 1
+                        let from = *next_index - 1;
                         let to = server.log.len();
 
+                        debug!("member:{}, from:{}, to:{}", address, from, to);
+
                         for i in from..to {
-                            // i - 1 as arrays are zero-based and Raft first message is at index 0
-                            entries.push(server.log[i - 1].clone());
+                            entries.push(server.log[i].clone());
                         }
 
                         let leader_commit = server.commit_index;
