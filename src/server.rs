@@ -214,7 +214,7 @@ impl Server {
     ///
     /// * `request` - An append entries request from the leader
     ///
-    fn apply_append_entries_request(&mut self, request: AppendEntriesRequest) -> bool {
+    fn apply_append_entries_request(&mut self, mut request: AppendEntriesRequest) -> bool {
 
         let accepted = match self.state {
             ElectionState::Follower => {
@@ -224,6 +224,13 @@ impl Server {
                 }
 
                 // TODO: check validity
+                self.current_term = request.term;
+                self.log.append(request.entries.as_mut());
+                // TODO: remove this
+                debug!("----- FOLLOWER NEW LOG");
+                for e in self.log.iter() {
+                    debug!("{:?}", e);
+                }
                 true
             },
             ElectionState::Candidate => {
@@ -493,61 +500,69 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
 
                 server = result.0;
 
+                // Client request received, woken up for replication
                 if server.client_request_received {
-                    // Client request received, replicate
                     server.client_request_received = false;
-                    for (address, next_index) in server.next_index.iter() {
-
-                        let recipient = address.clone();
-                        let term = server.current_term;
-                        let leader_id = server.id();
-                        let (prev_log_index, prev_log_term) = match server.log.get(next_index - 1) {
-                            Some(e) => (e.index, e.term),
-                            None => (0, 0),
-                        };
-
-                        let mut entries: Vec<LogEntry> = Vec::new();
-
-                        // Minus 1 as arrays are zero-based and Raft first message is at index 1
-                        let from = *next_index - 1;
-                        let to = server.log.len();
-
-                        debug!("member:{}, from:{}, to:{}", address, from, to);
-
-                        for i in from..to {
-                            entries.push(server.log[i].clone());
-                        }
-
-                        let leader_commit = server.commit_index;
-
-                        thread::Builder::new().name("replicate log".into()).spawn(move ||{
-                            message::send_append_entries(AppendEntriesRequest{
-                                term,
-                                leader_id,
-                                prev_log_index,
-                                prev_log_term,
-                                entries,
-                                leader_commit,
-                            }, recipient);
-                        }).unwrap();
-
-                    }
                 }
-                else {
-                    // Send a heartbeat to the network to avoid election timeout
-                    let (prev_log_index, prev_log_term) = match server.log.last() {
+
+                let mut index_updates = HashMap::new();
+
+                for (address, next_index) in server.next_index.iter() {
+
+                    // Minus 1 as arrays are zero-based and Raft first message is at index 1
+                    let last_sent = if *next_index > 1 {
+                        *next_index - 2
+                    } else {
+                        0
+                    };
+                    let from = *next_index - 1;
+                    let to = server.log.len();
+
+                    let recipient = address.clone();
+                    let term = server.current_term;
+                    let leader_id = server.id();
+                    let (prev_log_index, prev_log_term) = match server.log.get(last_sent) {
                         Some(e) => (e.index, e.term),
                         None => (0, 0),
                     };
-                    message::broadcast_append_entries(AppendEntriesRequest{
-                        term: server.current_term,
-                        leader_id: server.id(),
-                        prev_log_index,
-                        prev_log_term,
-                        entries: vec![],
-                        leader_commit: server.commit_index,
-                    }, &server.config);
+
+                    // Entries that will be send for that member
+                    let mut entries: Vec<LogEntry> = Vec::new();
+
+                    debug!("member:{}, from:{}, to:{}", address, from, to);
+
+                    for i in from..to {
+                        entries.push(server.log[i].clone());
+                    }
+                    index_updates.insert(address.clone(), entries.len());
+
+                    let leader_commit = server.commit_index;
+
+                    thread::Builder::new().name("replicate log".into()).spawn(move ||{
+                        message::send_append_entries(AppendEntriesRequest{
+                            term,
+                            leader_id,
+                            prev_log_index,
+                            prev_log_term,
+                            entries,
+                            leader_commit,
+                        }, recipient);
+                    }).unwrap();
                 }
+
+                for (address, next_index) in server.next_index.iter_mut() {
+                    // Update index of next entry
+                    *next_index += match index_updates.get(address) {
+                        Some(i) => *i,
+                        None => 0,
+                    };
+                }
+                // TODO: remove this
+                debug!("***** LEADER NEW LOG");
+                for e in server.log.iter() {
+                    debug!("{:?}", e);
+                }
+                debug!("next indices after update: {:?}", server.next_index);
             }
         })
         .unwrap();
@@ -575,7 +590,6 @@ fn start_candidate_timeout_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
             let election_timeout_occured;
             let has_won_election;
             let other_leader_elected;
-
 
             trace!("election timeout - will wait with timeout={}ms", timeout);
 

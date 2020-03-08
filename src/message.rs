@@ -105,13 +105,6 @@ pub fn broadcast_vote_request(message: VoteRequest, config: &Config) {
     broadcast(MESSAGE_TYPE_VOTE_REQUEST, json, config);
 }
 
-pub fn broadcast_append_entries(message: AppendEntriesRequest, config: &Config) {
-
-    let json: String = serialize(&message).unwrap();
-
-    broadcast(MESSAGE_TYPE_APPEND_ENTRIES_REQUEST, json, config);
-}
-
 pub fn broadcast(message_type: u8, json: String, config: &Config) {
 
     let data = Arc::new([&[message_type], json.as_bytes()].concat());
