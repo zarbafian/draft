@@ -223,6 +223,7 @@ impl Server {
                     return false;
                 }
 
+                //let (my_prev_index, my_prev_term) = match self.log.las { }
                 // TODO: check validity
                 self.current_term = request.term;
                 self.log.append(request.entries.as_mut());
@@ -491,6 +492,14 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
                 let (lock, timeout_cvar) = &*timeout_pair.clone();
                 let mut server = lock.lock().unwrap();
 
+                // Send initial heartbeat
+                let mut initial_append = HashMap::new();
+                for (address, _next_index) in server.next_index.iter() {
+                    initial_append.insert(address.clone(), Vec::new());
+                }
+
+                build_and_send_entries_async("initial append entries".into(), &server, initial_append);
+
                 // Set maximum inactivity from leader to a percentage of the election timeout
                 // TODO: fine tune
                 let pct: f64 = 0.6;
@@ -505,26 +514,16 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
                     server.client_request_received = false;
                 }
 
+                // The new entries for each member
+                let mut entries_map = HashMap::new();
+                // The index increments i.e. the size of the new entries for each member
                 let mut index_updates = HashMap::new();
 
+                // For each member build entries to be sent and increments to index
                 for (address, next_index) in server.next_index.iter() {
 
-                    // Minus 1 as arrays are zero-based and Raft first message is at index 1
-                    let last_sent = if *next_index > 1 {
-                        *next_index - 2
-                    } else {
-                        0
-                    };
                     let from = *next_index - 1;
                     let to = server.log.len();
-
-                    let recipient = address.clone();
-                    let term = server.current_term;
-                    let leader_id = server.id();
-                    let (prev_log_index, prev_log_term) = match server.log.get(last_sent) {
-                        Some(e) => (e.index, e.term),
-                        None => (0, 0),
-                    };
 
                     // Entries that will be send for that member
                     let mut entries: Vec<LogEntry> = Vec::new();
@@ -535,23 +534,14 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
                         entries.push(server.log[i].clone());
                     }
                     index_updates.insert(address.clone(), entries.len());
+                    entries_map.insert(address.clone(), entries);
 
-                    let leader_commit = server.commit_index;
-
-                    thread::Builder::new().name("replicate log".into()).spawn(move ||{
-                        message::send_append_entries(AppendEntriesRequest{
-                            term,
-                            leader_id,
-                            prev_log_index,
-                            prev_log_term,
-                            entries,
-                            leader_commit,
-                        }, recipient);
-                    }).unwrap();
                 }
 
+                build_and_send_entries_async("replicate log".into(), &server, entries_map);
+
+                // Update the indices of next entry
                 for (address, next_index) in server.next_index.iter_mut() {
-                    // Update index of next entry
                     *next_index += match index_updates.get(address) {
                         Some(i) => *i,
                         None => 0,
@@ -566,6 +556,41 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
             }
         })
         .unwrap();
+}
+fn build_and_send_entries_async(name: String, server: &Server, mut entries_map: HashMap<String, Vec<LogEntry>>) {
+
+    for (address, next_index) in server.next_index.iter() {
+
+        // Minus 1 as arrays are zero-based and Raft first message is at index 1
+        let last_sent = if *next_index > 1 {
+            *next_index - 2
+        } else {
+            0
+        };
+        let recipient = address.clone();
+        let term = server.current_term;
+        let leader_id = server.id();
+        let (prev_log_index, prev_log_term) = match server.log.get(last_sent) {
+            Some(e) => (e.index, e.term),
+            None => (0, 0),
+        };
+        let leader_commit = server.commit_index;
+        let entries = match entries_map.remove(address) {
+            Some(e) => e,
+            None => Vec::new(),
+        };
+
+        thread::Builder::new().name(name.clone()).spawn(move ||{
+            message::send_append_entries(AppendEntriesRequest{
+                term,
+                leader_id,
+                prev_log_index,
+                prev_log_term,
+                entries,
+                leader_commit,
+            }, recipient);
+        }).unwrap();
+    }
 }
 
 /// Start thread to manage election timeout when candidate
