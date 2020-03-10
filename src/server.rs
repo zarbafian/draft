@@ -396,7 +396,8 @@ impl Server {
         };
 
         if response.success {
-            *match_index = *next_index - 1;
+            *next_index = self.log.len() + 1;
+            *match_index = self.log.len() + 1;
         }
         else {
             *next_index -= 1;
@@ -662,9 +663,10 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
         .name(String::from("leader"))
         .spawn(move || {
             info!("started");
-            loop {
-                let (lock, timeout_cvar) = &*timeout_pair.clone();
-                let mut server = lock.lock().unwrap();
+
+            {
+                let (lock, _timeout_cvar) = &*timeout_pair.clone();
+                let server = lock.lock().unwrap();
 
                 // Send initial heartbeat
                 let mut initial_append = HashMap::new();
@@ -673,6 +675,11 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
                 }
 
                 build_and_send_entries_async("initial append entries".into(), &server, initial_append);
+            }
+
+            loop {
+                let (lock, timeout_cvar) = &*timeout_pair.clone();
+                let mut server = lock.lock().unwrap();
 
                 // Set maximum inactivity from leader to a percentage of the election timeout
                 // TODO: fine tune
@@ -690,8 +697,6 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
 
                 // The new entries for each member
                 let mut entries_map = HashMap::new();
-                // The index increments i.e. the size of the new entries for each member
-                let mut index_updates = HashMap::new();
 
                 // For each member build entries to be sent and increments to index
                 for (address, next_index) in server.next_index.iter() {
@@ -707,20 +712,12 @@ fn start_leader_thread(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
                     for i in from..to {
                         entries.push(server.log[i].clone());
                     }
-                    index_updates.insert(address.clone(), entries.len());
                     entries_map.insert(address.clone(), entries);
 
                 }
 
                 build_and_send_entries_async("replicate log".into(), &server, entries_map);
 
-                // Update the indices of next entry
-                for (address, next_index) in server.next_index.iter_mut() {
-                    *next_index += match index_updates.get(address) {
-                        Some(i) => *i,
-                        None => 0,
-                    };
-                }
                 // TODO: remove this
                 debug!("***** LEADER NEW LOG");
                 for e in server.log.iter() {
