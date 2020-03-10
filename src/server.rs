@@ -228,6 +228,7 @@ impl Server {
                         sender_id,
                         term,
                         success: false,
+                        last_index: 0
                     },
                     recipient
                 );
@@ -259,6 +260,7 @@ impl Server {
                                 sender_id,
                                 term,
                                 success: true,
+                                last_index: 0
                             },
                             recipient
                         );
@@ -298,12 +300,17 @@ impl Server {
 
                                 // Reply true
                                 let term = self.current_term;
+                                let last_index = match self.log.last() {
+                                    Some(e) => e.index,
+                                    None => 0,
+                                };
                                 thread::spawn(move || {
                                     message::send_append_entries_response(
                                         AppendEntriesResponse {
                                             sender_id,
                                             term,
                                             success: true,
+                                            last_index
                                         },
                                         recipient
                                     );
@@ -331,6 +338,7 @@ impl Server {
                                             sender_id,
                                             term,
                                             success: false,
+                                            last_index: 0
                                         },
                                         recipient
                                     );
@@ -347,6 +355,7 @@ impl Server {
                                         sender_id,
                                         term,
                                         success: false,
+                                        last_index: 0
                                     },
                                     recipient
                                 );
@@ -396,8 +405,8 @@ impl Server {
         };
 
         if response.success {
-            *next_index = self.log.len() + 1;
-            *match_index = self.log.len() + 1;
+            *next_index = response.last_index + 1;
+            *match_index = response.last_index + 1;
         }
         else {
             *next_index -= 1;

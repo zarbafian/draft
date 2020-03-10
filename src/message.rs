@@ -84,6 +84,7 @@ pub struct AppendEntriesResponse {
     pub sender_id: String,
     pub term: usize,
     pub success: bool,
+    pub last_index: usize,
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct VoteRequest {
