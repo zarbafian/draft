@@ -5,7 +5,7 @@ use std::thread;
 use rand::Rng;
 use std::time::{Duration, Instant};
 use std::borrow::Borrow;
-use log::{trace, debug, info, error};
+use log::{trace, debug, info, warn, error};
 
 use crate::query;
 use crate::config::{Config, Member};
@@ -216,32 +216,152 @@ impl Server {
     ///
     fn apply_append_entries_request(&mut self, mut request: AppendEntriesRequest) -> bool {
 
+        // Same term checking in all states
+        if request.term < self.current_term {
+            let term = self.current_term;
+            let recipient = request.leader_id.clone();
+            let sender_id = self.id();
+            // Bad term
+            thread::spawn(move ||{
+                message::send_append_entries_response(
+                    AppendEntriesResponse{
+                        sender_id,
+                        term,
+                        success: false,
+                    },
+                    recipient
+                );
+            });
+            return false;
+        }
+
         let accepted = match self.state {
             ElectionState::Follower => {
-                if request.term < self.current_term {
-                    // Bad term
-                    return false;
-                }
-
-                //let (my_prev_index, my_prev_term) = match self.log.las { }
-                // TODO: check validity
+                // Update my term (TODO: check)
                 self.current_term = request.term;
-                self.log.append(request.entries.as_mut());
-                // TODO: remove this
-                debug!("----- FOLLOWER NEW LOG");
-                for e in self.log.iter() {
-                    debug!("{:?}", e);
+
+                // Address of leader
+                let recipient = request.leader_id.clone();
+                let sender_id = self.id();
+
+                // Start scenario
+                if request.prev_log_index == 0 {
+                    self.log.clear();
+
+                    // Append new entries
+                    self.log.append(request.entries.as_mut());
+
+                    // Reply true
+                    let term = self.current_term;
+                    thread::spawn(move ||{
+                        message::send_append_entries_response(
+                            AppendEntriesResponse{
+                                sender_id,
+                                term,
+                                success: true,
+                            },
+                            recipient
+                        );
+                    });
+
+                    // TODO: remove this
+                    debug!("----- FOLLOWER NEW LOG");
+                    for e in self.log.iter() {
+                        debug!("{:?}", e);
+                    }
                 }
-                true
+                // Normal scenario
+                else {
+                    // Array index of previous log
+                    let prev_log_array_index = request.prev_log_index - 1;
+
+                    let my_entry = self.log.get(prev_log_array_index);
+
+                    debug!("request.prev_log_index={}, entry={:?}", request.prev_log_index, my_entry);
+
+                    match my_entry {
+                        Some(entry) => {
+                            // Found, compare term
+                            if entry.term == request.prev_log_term {
+                                // Last entry match, remove everything after (normally nothing)
+                                debug!("Previous index and term matched");
+                                if self.log.len() > request.prev_log_index {
+                                    warn!("Received duplicate entries: self.log.len()={}, request.prev_log_index={}", self.log.len(), request.prev_log_index);
+                                    let first_to_delete = request.prev_log_index; // -1 for array indexing, +1 for right after
+                                    let last_to_delete = self.log.len();
+                                    for _i in first_to_delete..last_to_delete {
+                                        self.log.pop();
+                                    }
+                                }
+                                // Append new entries
+                                self.log.append(request.entries.as_mut());
+
+                                // Reply true
+                                let term = self.current_term;
+                                thread::spawn(move || {
+                                    message::send_append_entries_response(
+                                        AppendEntriesResponse {
+                                            sender_id,
+                                            term,
+                                            success: true,
+                                        },
+                                        recipient
+                                    );
+                                });
+
+                                // TODO: remove this
+                                debug!("----- FOLLOWER NEW LOG");
+                                for e in self.log.iter() {
+                                    debug!("{:?}", e);
+                                }
+
+                            } else {
+                                debug!("Previous index and term did not match, delete entries after ");
+                                let first_to_delete = request.prev_log_index - 1; // -1 for array indexing
+                                let last_to_delete = self.log.len();
+                                for _i in first_to_delete..last_to_delete {
+                                    self.log.pop();
+                                }
+
+                                // Respond false so leader decreases its next_index
+                                let term = self.current_term;
+                                thread::spawn(move || {
+                                    message::send_append_entries_response(
+                                        AppendEntriesResponse {
+                                            sender_id,
+                                            term,
+                                            success: false,
+                                        },
+                                        recipient
+                                    );
+                                });
+                            }
+                        },
+                        None => {
+                            // Respond false so leader decreases its next_index
+                            debug!("I am back with only {} entries", self.log.len());
+                            let term = self.current_term;
+                            thread::spawn(move || {
+                                message::send_append_entries_response(
+                                    AppendEntriesResponse {
+                                        sender_id,
+                                        term,
+                                        success: false,
+                                    },
+                                    recipient
+                                );
+                            });
+                        }
+                    }
+                }
+                true // To reset election timeout
             },
             ElectionState::Candidate => {
-                // TODO: check validity
-                // If request.term > current_term then convert to follower
+                // Convert to follower
                 true
             },
             ElectionState::Leader => {
-                // TODO: check validity
-                // If request.term > current_term then convert to follower
+                // Convert to follower
                 true
             }
         };
@@ -249,14 +369,40 @@ impl Server {
         if accepted {
             self.voted_for = None;
             self.leader_id = Some(request.leader_id);
-            // TODO: clear other fields
+            self.current_votes.clear();
         }
 
         accepted
     }
 
-    fn apply_append_entries_response(&mut self, _response: AppendEntriesResponse) {
-        unimplemented!();
+    fn apply_append_entries_response(&mut self, response: AppendEntriesResponse) {
+
+        let sender_id = response.sender_id.clone();
+
+        let next_index = match self.next_index.get_mut(&sender_id) {
+            Some(i) => i,
+            None => {
+                warn!("Received response from unknown member: {}", sender_id);
+                return;
+            }
+        };
+
+        let match_index = match self.match_index.get_mut(&response.sender_id) {
+            Some(i) => i,
+            None => {
+                error!("No match_index entry for member: {}", sender_id);
+                return;
+            }
+        };
+
+        if response.success {
+            *match_index = *next_index - 1;
+        }
+        else {
+            *next_index -= 1;
+        }
+
+        debug!("Updated indices: next_index={}, match_index={}", next_index, match_index);
     }
 
     /// Returns `true` if the vote request was accepted and a vote was send.
@@ -346,7 +492,7 @@ impl Server {
         }
         else {
             // TODO
-            // update term
+            // update term, switch to follower if received term > current_term
         }
     }
 
@@ -361,10 +507,16 @@ impl Server {
         match self.state {
             ElectionState::Leader => {
                 // Handle message
-                self.append_log_entries(vec![message.entry.clone()]);
-                let result = query::Result::new(query::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
-                send_client_response(self.id(), message, result);
-                true
+                if self.append_log_entries(vec![message.entry.clone()]) {
+                    let result = query::Result::new(query::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
+                    send_client_response(self.id(), message, result);
+                    true
+                }
+                else {
+                    let result = query::Result::new(query::QUERY_RESULT_REJECTED, "request rejected".to_string(), "could not apply request to the state machine".to_string());
+                    send_client_response(self.id(), message, result);
+                    false
+                }
             },
             ElectionState::Follower => {
                 if let Some(leader) = self.leader_id.borrow() {
@@ -389,18 +541,22 @@ impl Server {
         }
     }
 
-    fn append_log_entries(&mut self, queries: Vec<Query>) {
+    fn append_log_entries(&mut self, queries: Vec<Query>) -> bool {
+
+        let success = true;
 
         for q in queries {
             info!("will append log: {:?}", q);
             self.log.push(LogEntry {
                 term: self.current_term,
-                index: self.log.len() as usize + 1,
+                index: self.log.len() + 1,
                 data: q,
             });
-            // TODO: apply to state machine
+            // TODO: apply to state machine and verify request is accepted
             self.last_applied +=1;
         }
+
+        success
     }
 }
 
@@ -445,7 +601,7 @@ fn handle_election_timeout(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
         };
 
         // Send vote request to network
-        message::broadcast_vote_request(VoteRequest{
+        message::broadcast_vote_request_async(VoteRequest{
             term: server.current_term,
             candidate_id: server.id(),
             last_log_index: last_index,
@@ -462,10 +618,11 @@ fn handle_step_down(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
     let (lock, _timeout_cvar) = &*timeout_pair;
     let mut server = lock.lock().unwrap();
 
-    // TODO: index, log,...
+    server.reset_election_timeout = false;
+    server.client_request_received = false;
     server.state = ElectionState::Follower;
     server.voted_for = None;
-    server.current_votes = HashSet::new();
+    server.current_votes.clear();
 
     start_follower_timeout_thread(timeout_pair.clone());
 }
@@ -478,7 +635,24 @@ fn handle_election_won(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
     let (lock, _timeout_cvar) = &*timeout_pair;
     let mut server = lock.lock().unwrap();
 
+    // Update state
+    server.leader_id = Some(server.id());
+    server.reset_election_timeout = false;
+    server.client_request_received = false;
     server.state = ElectionState::Leader;
+    server.voted_for = None;
+    server.current_votes.clear();
+
+    // Value of index right after the last log
+    let next_entry = match server.log.last() {
+        Some(l) => l.index + 1,
+        None => 1,
+    };
+
+    // Initialize next_index to the
+    for index in server.next_index.values_mut() {
+        *index = next_entry;
+    }
 
     start_leader_thread(timeout_pair.clone());
 }
@@ -561,19 +735,24 @@ fn build_and_send_entries_async(name: String, server: &Server, mut entries_map: 
 
     for (address, next_index) in server.next_index.iter() {
 
-        // Minus 1 as arrays are zero-based and Raft first message is at index 1
-        let last_sent = if *next_index > 1 {
-            *next_index - 2
-        } else {
-            0
-        };
+        // At least one log entry was previously sent
+        let has_sent = *next_index > 1;
+
         let recipient = address.clone();
         let term = server.current_term;
         let leader_id = server.id();
-        let (prev_log_index, prev_log_term) = match server.log.get(last_sent) {
-            Some(e) => (e.index, e.term),
-            None => (0, 0),
+
+        let (prev_log_index, prev_log_term) = if has_sent {
+            // Minus 1 as arrays are zero-based and Raft first message is at index 1
+            match server.log.get(*next_index - 2) {
+                Some(e) => (e.index, e.term),
+                None => (0, 0),
+            }
+        }
+        else {
+            (0, 0)
         };
+
         let leader_commit = server.commit_index;
         let entries = match entries_map.remove(address) {
             Some(e) => e,

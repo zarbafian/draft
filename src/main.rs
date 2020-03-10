@@ -15,7 +15,7 @@ fn main() {
 
     // Configure logging
     config::configure_logging(config.log_file.clone(), config.log_level.clone()).unwrap_or_else(|err| {
-        eprintln!("Error with loggin configuration: {}", err);
+        eprintln!("Error with setting logging configuration: {}", err);
         process::exit(1)
     });
 
