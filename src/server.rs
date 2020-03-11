@@ -8,7 +8,7 @@ use std::borrow::Borrow;
 use log::{trace, debug, info, warn, error};
 
 use crate::query;
-use crate::config::{Config, Member};
+use crate::config::{Config};
 use crate::message::{self, AppendEntriesRequest, VoteRequest, LogEntry, VoteResponse, AppendEntriesResponse, ClientRequest, ClientResponse};
 use crate::query::Query;
 
@@ -43,9 +43,7 @@ pub fn start(config: Config) {
     // Receive buffer
     let mut buf = [0u8; 65535];
 
-    // Shared data: server state machine + condition variable election timeout
-    // Document use with the naming:
-    // - NAME-ACTION
+    // Shared data: server state machine + condition variable for message notification
     let shared_pair = Arc::new((Mutex::new(server), Condvar::new()));
     let timeout_pair = shared_pair.clone();
 
@@ -208,6 +206,13 @@ impl Server {
         self.current_votes.len() as f64 > ((self.config.cluster.others.len() + 1) as f64 / 2 as f64)
     }
 
+    fn last_entry_indices(&self) -> (usize, usize) {
+        match self.log.last() {
+            Some(e) => (e.term, e.index),
+            None => (0,0)
+        }
+    }
+
     /// Returns `true` if the message was accepted.
     ///
     /// # Arguments
@@ -238,7 +243,7 @@ impl Server {
 
         let accepted = match self.state {
             ElectionState::Follower => {
-                // Update my term (TODO: check)
+                // Update my term
                 self.current_term = request.term;
 
                 // Address of leader
@@ -421,72 +426,44 @@ impl Server {
     ///
     /// * `request` - A vote request from a candidate
     ///
-    fn apply_vote_request(&mut self, request: VoteRequest) -> bool{
+    fn apply_vote_request(&mut self, request: VoteRequest) -> bool {
 
         // Only vote as a follower
         if let ElectionState::Follower = self.state {
 
+            let (my_last_term, my_last_index) = self.last_entry_indices();
+
+            if request.last_log_term < my_last_term || (request.last_log_term == my_last_term && request.last_log_index < my_last_index) {
+                // Vote rejected because candidate is behind
+                info!("Vote rejected because candidate is behin: {}, {} < {}, {}", request.last_log_term, request.last_log_index, my_last_term, my_last_index);
+                send_vote_response(VoteResponse {
+                    voter_id: self.id(),
+                    term: self.current_term,
+                    vote_granted: false,
+                }, request.candidate_id);
+                return false;
+            }
+
             if let Some(votee) = self.voted_for.borrow() {
                 if !votee.eq(&request.candidate_id) {
                     // Already voted for someone else
-                    info!("already voted for: {}", votee);
+                    info!("already voted for someone: {}", votee);
                     return false;
                 }
             }
 
-            // Find votee
-            let mut votee: Option<Member> = None;
 
-            for other in self.config.cluster.others.iter() {
-                if other.addr.to_string().eq(&request.candidate_id) {
-                    votee = Some(Member { addr: other.addr.clone() });
-                    break;
-                }
-            }
+            // Vote accepted
+            info!("Vote accepted: {:?}", request);
+            self.voted_for = Some(request.candidate_id.clone());
 
-            if let Some(m) = votee {
-
-                // TODO: check eligibility
-                let vote_request_accepted = true;
-
-                if vote_request_accepted {
-                    info!("Vote accepted: {:?}", request);
-                    self.voted_for = Some(request.candidate_id.clone());
-
-                    let voter_id = self.id();
-                    let term = self.current_term;
-                    let vote_granted = true;
-                    thread::Builder::new().name("send granted vote".into()).spawn(move || {
-                        // Send vote
-                        message::send_vote_response(VoteResponse {
-                            voter_id,
-                            term,
-                            vote_granted,
-                        }, m.addr.to_string());
-                    }).unwrap();
-                    // Vote sent
-                    true
-                } else {
-                    // Vote request rejected
-                    info!("Vote rejected: {:?}", request);
-                    let voter_id = self.id();
-                    let term = self.current_term;
-                    let vote_granted = false;
-                    thread::Builder::new().name("send rejected vote".into()).spawn(move || {
-                        // Send vote
-                        message::send_vote_response(VoteResponse {
-                            voter_id,
-                            term,
-                            vote_granted,
-                        }, m.addr.to_string());
-                    }).unwrap();
-                    false
-                }
-            } else {
-                // Candidate not found
-                error!("Member not found for sending vote: {:?}", request.candidate_id);
-                false
-            }
+            send_vote_response(VoteResponse {
+                    voter_id: self.id(),
+                    term: self.current_term,
+                    vote_granted: true,
+                }, request.candidate_id);
+            // Vote sent
+            true
         } else {
         //Candidate or leader
             false
@@ -501,8 +478,10 @@ impl Server {
             self.current_votes.insert(response.voter_id);
         }
         else {
-            // TODO
-            // update term, switch to follower if received term > current_term
+            if response.term > self.current_term {
+                self.current_term = response.term;
+                // TODO: switch to follower
+            }
         }
     }
 
@@ -570,6 +549,17 @@ impl Server {
     }
 }
 
+fn send_vote_response(response: VoteResponse, recipient: String) {
+
+    thread::Builder::new()
+        .name("vote response".into())
+        .spawn(move || {
+            // Send vote
+            message::send_vote_response(response, recipient);
+        })
+        .unwrap();
+}
+
 fn send_client_response(server_id: String, request: ClientRequest, result: query::Result) {
     thread::Builder::new()
         .name("client response".into())
@@ -611,7 +601,7 @@ fn handle_election_timeout(timeout_pair: Arc<(Mutex<Server>, Condvar)>) {
         };
 
         // Send vote request to network
-        message::broadcast_vote_request_async(VoteRequest{
+        message::broadcast_vote_request(VoteRequest{
             term: server.current_term,
             candidate_id: server.id(),
             last_log_index: last_index,

@@ -100,14 +100,14 @@ pub struct VoteResponse {
     pub vote_granted: bool,
 }
 
-pub fn broadcast_vote_request_async(message: VoteRequest, config: &Config) {
+pub fn broadcast_vote_request(message: VoteRequest, config: &Config) {
 
     let json: String = serialize(&message).unwrap();
 
-    broadcast_async(MESSAGE_TYPE_VOTE_REQUEST, json, config);
+    parallel_broadcast(MESSAGE_TYPE_VOTE_REQUEST, json, config);
 }
 
-pub fn broadcast_async(message_type: u8, json: String, config: &Config) {
+pub fn parallel_broadcast(message_type: u8, json: String, config: &Config) {
 
     let data = Arc::new([&[message_type], json.as_bytes()].concat());
 
