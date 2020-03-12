@@ -126,8 +126,10 @@ pub fn start(config: Config) {
                                     let (lock, timeout_cvar) = &*thread_pair;
                                     let mut server = lock.lock().unwrap();
 
-                                    if server.apply_client_request(message) {
+                                    let client = message.client_id.clone();
+                                    if let Some(i) = server.apply_client_request(message.clone()) {
                                         // Client request received, replicate
+                                        server.pending_responses.insert(client, (message, i));
                                         server.client_request_received = true;
                                         timeout_cvar.notify_one();
                                     }
@@ -169,6 +171,8 @@ struct Server {
     match_index: HashMap<String, usize>,
 
     log: Vec<LogEntry>,
+
+    pending_responses: HashMap<String, (ClientRequest, usize)>,
 }
 
 impl Server {
@@ -195,6 +199,7 @@ impl Server {
             next_index,
             match_index,
             log: Vec::new(),
+            pending_responses: HashMap::new(),
         }
     }
 
@@ -223,6 +228,7 @@ impl Server {
 
         // Same term checking in all states
         if request.term < self.current_term {
+            error!("Received invalid term {}, current is {}", request.term, self.current_term);
             let term = self.current_term;
             let recipient = request.leader_id.clone();
             let sender_id = self.id();
@@ -243,6 +249,7 @@ impl Server {
 
         let accepted = match self.state {
             ElectionState::Follower => {
+
                 // Update my term
                 self.current_term = request.term;
 
@@ -252,9 +259,12 @@ impl Server {
 
                 // Start scenario
                 if request.prev_log_index == 0 {
+
+                    info!("Received first log");
                     self.log.clear();
 
                     // Append new entries
+                    let entries_count = request.entries.len();
                     self.log.append(request.entries.as_mut());
 
                     // Reply true
@@ -265,7 +275,7 @@ impl Server {
                                 sender_id,
                                 term,
                                 success: true,
-                                last_index: 0
+                                last_index: entries_count
                             },
                             recipient
                         );
@@ -288,6 +298,7 @@ impl Server {
 
                     match my_entry {
                         Some(entry) => {
+
                             // Found, compare term
                             if entry.term == request.prev_log_term {
                                 // Last entry match, remove everything after (normally nothing)
@@ -309,7 +320,9 @@ impl Server {
                                     Some(e) => e.index,
                                     None => 0,
                                 };
+
                                 thread::spawn(move || {
+
                                     message::send_append_entries_response(
                                         AppendEntriesResponse {
                                             sender_id,
@@ -410,14 +423,47 @@ impl Server {
         };
 
         if response.success {
+            // Update next and match index
             *next_index = response.last_index + 1;
             *match_index = response.last_index + 1;
+
+            // Update of commit index
+            let mut sorted_indices = Vec::new();
+
+            // Gather list of all indices
+            self.next_index.iter().for_each(|(_, &value)| { sorted_indices.push(value) });
+
+            // Sort in ascending order, and reverse to have an descending order
+            sorted_indices.sort();
+            sorted_indices.reverse();
+
+            // The commit index is the highest index replicated on a majority
+            let required_majority = (self.next_index.len() as f64 / 2 as f64).ceil() as usize;
+            let commit_index = sorted_indices[required_majority - 1] - 1;
+
+            // Update commit index
+            self.commit_index = commit_index;
+
+            // Respond to pending request from client
+            let mut answered_responses = Vec::new();
+            for (client_id, (request, required_commit)) in self.pending_responses.iter() {
+                if self.commit_index >= *required_commit {
+                    // Respond to client
+                    let result = query::Result::new(query::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
+                    send_client_response(self.id(), request.clone(), result);
+                    answered_responses.push(client_id.clone());
+                }
+            }
+
+            // Clear pending requests
+            for key in answered_responses.iter() {
+                self.pending_responses.remove(key);
+            }
+            info!("Size of pending requests: {}", self.pending_responses.len());
         }
         else {
             *next_index -= 1;
         }
-
-        debug!("Updated indices: next_index={}, match_index={}", next_index, match_index);
     }
 
     /// Returns `true` if the vote request was accepted and a vote was send.
@@ -491,14 +537,17 @@ impl Server {
     ///
     /// * `request` - A request from a client
     ///
-    fn apply_client_request(&mut self, message: ClientRequest) -> bool {
+    fn apply_client_request(&mut self, message: ClientRequest) -> Option<usize> {
 
         match self.state {
             ElectionState::Leader => {
                 // Handle message
+                let log_index = self.append_log_entries(vec![message.entry.clone()]);
+                Some(log_index)
+                /*
                 if self.append_log_entries(vec![message.entry.clone()]) {
-                    let result = query::Result::new(query::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
-                    send_client_response(self.id(), message, result);
+                    //let result = query::Result::new(query::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
+                    //send_client_response(self.id(), message, result);
                     true
                 }
                 else {
@@ -506,33 +555,33 @@ impl Server {
                     send_client_response(self.id(), message, result);
                     false
                 }
+                */
             },
             ElectionState::Follower => {
                 if let Some(leader) = self.leader_id.borrow() {
                     // Redirect to leader by sending its address
                     let result = query::Result::new(query::QUERY_RESULT_REDIRECT, "leader redirect".to_string(), leader.to_string());
                     send_client_response(self.id(), message, result);
-                    false
+                    None
                 }
                 else {
                     // Currently no leader to handle the request
                     let result = query::Result::new(query::QUERY_RESULT_RETRY, "leader unknown".to_string(), "".to_string());
                     send_client_response(self.id(), message, result);
-                    false
+                    None
                 }
             }
             ElectionState::Candidate => {
                 // Leader offline, proceeding with election
                 let result = query::Result::new(query::QUERY_RESULT_CANDIDATE, "leader offline".to_string(), "".to_string());
                 send_client_response(self.id(), message, result);
-                false
+                None
             }
         }
     }
 
-    fn append_log_entries(&mut self, queries: Vec<Query>) -> bool {
-
-        let success = true;
+    /// Returns the commit index for the entries to be considered commited
+    fn append_log_entries(&mut self, queries: Vec<Query>) -> usize {
 
         for q in queries {
             info!("will append log: {:?}", q);
@@ -541,11 +590,9 @@ impl Server {
                 index: self.log.len() + 1,
                 data: q,
             });
-            // TODO: apply to state machine and verify request is accepted
-            self.last_applied +=1;
         }
 
-        success
+        self.log.len()
     }
 }
 

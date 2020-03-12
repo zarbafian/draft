@@ -2,7 +2,7 @@ use serde::{Serialize, Deserialize};
 
 pub const QUERY_RESULT_SUCCESS: u8 = 0x00;
 pub const QUERY_RESULT_REDIRECT: u8 = 0x01;
-pub const QUERY_RESULT_REJECTED: u8 = 0x11;
+//pub const QUERY_RESULT_REJECTED: u8 = 0x11;
 pub const QUERY_RESULT_CANDIDATE: u8 = 0x12;
 pub const QUERY_RESULT_RETRY: u8 = 0x13;
 

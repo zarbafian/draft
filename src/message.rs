@@ -57,7 +57,7 @@ pub struct LogEntry {
     pub index: usize,
     pub data: Query,
 }
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientRequest {
     pub client_id: String,
     pub request_id: String,
