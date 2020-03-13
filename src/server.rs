@@ -5,11 +5,11 @@ use std::thread;
 use std::borrow::Borrow;
 use log::{trace, debug, info, warn, error};
 
-use crate::query;
+use crate::net;
 use crate::config::{Member, Config};
-use crate::message::{self, AppendEntriesRequest, VoteRequest, LogEntry, VoteResponse, AppendEntriesResponse, ClientRequest, ClientResponse};
-use crate::query::Query;
+use crate::message::{self, AppendEntriesRequest, VoteRequest, LogEntry, VoteResponse, AppendEntriesResponse, ClientRequest, ClientResponse, Query, QueryResult};
 use crate::behavior;
+use crate::util::ThreadPool;
 
 macro_rules! parse_json {
     ($x:expr) => {
@@ -32,8 +32,12 @@ pub fn start(config: Config) {
     info!("[{}] server started", my_address);
     info!("");
 
+    let threads = config.handler_threads;
     let server = Server::new(config);
     info!("{:?}", server);
+
+    // Create a thread pool for handling messages
+    let pool = ThreadPool::new(threads);
 
     // Bind listener socket
     let socket = UdpSocket::bind(my_address)
@@ -60,10 +64,9 @@ pub fn start(config: Config) {
 
                 let thread_pair = shared_pair.clone();
 
-                // Message handling thread
-                thread::Builder::new()
-                    .name("message handler".into())
-                    .spawn(move || {
+                // Handling message
+                pool.execute(
+                    Box::new(move || {
                         trace!("Received {} bytes from {:?}", amount, src);
 
                         // Check that we received a valid message type in the first byte
@@ -144,7 +147,8 @@ pub fn start(config: Config) {
                             }
 
                         }
-                    }).unwrap();
+                    })
+                );
             }
         }
     }
@@ -237,6 +241,11 @@ impl Server {
     /// Returns the election randomness in milliseconds.
     pub fn get_election_randomness(&self) -> u64 {
         self.config.election_randomness
+    }
+
+    /// Returns the maximum leader inactivity in milliseconds.
+    pub fn get_max_inactivity(&self) -> u64 {
+        self.config.max_inactivity
     }
 
     /// Returns the current term.
@@ -400,7 +409,7 @@ impl Server {
             let sender_id = self.id();
             // Bad term
             thread::spawn(move ||{
-                message::send_append_entries_response(
+                net::send_append_entries_response(
                     AppendEntriesResponse{
                         sender_id,
                         term,
@@ -436,7 +445,7 @@ impl Server {
                     // Reply true
                     let term = self.current_term;
                     thread::spawn(move ||{
-                        message::send_append_entries_response(
+                        net::send_append_entries_response(
                             AppendEntriesResponse{
                                 sender_id,
                                 term,
@@ -489,7 +498,7 @@ impl Server {
 
                                 thread::spawn(move || {
 
-                                    message::send_append_entries_response(
+                                    net::send_append_entries_response(
                                         AppendEntriesResponse {
                                             sender_id,
                                             term,
@@ -517,7 +526,7 @@ impl Server {
                                 // Respond false so leader decreases its next_index
                                 let term = self.current_term;
                                 thread::spawn(move || {
-                                    message::send_append_entries_response(
+                                    net::send_append_entries_response(
                                         AppendEntriesResponse {
                                             sender_id,
                                             term,
@@ -534,7 +543,7 @@ impl Server {
                             debug!("I am late with only {} entries", self.log.len());
                             let term = self.current_term;
                             thread::spawn(move || {
-                                message::send_append_entries_response(
+                                net::send_append_entries_response(
                                     AppendEntriesResponse {
                                         sender_id,
                                         term,
@@ -634,7 +643,7 @@ impl Server {
             for (client_id, (request, required_commit)) in self.pending_responses.iter() {
                 if self.commit_index >= *required_commit {
                     // Respond to client
-                    let result = query::Result::new(query::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
+                    let result = QueryResult::new(message::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
                     send_client_response(self.id(), request.clone(), result);
                     answered_responses.push(client_id.clone());
                 }
@@ -740,20 +749,20 @@ impl Server {
             ElectionState::Follower => {
                 if let Some(leader) = self.leader_id.borrow() {
                     // Redirect to leader by sending its address
-                    let result = query::Result::new(query::QUERY_RESULT_REDIRECT, "leader redirect".to_string(), leader.to_string());
+                    let result = QueryResult::new(message::QUERY_RESULT_REDIRECT, "leader redirect".to_string(), leader.to_string());
                     send_client_response(self.id(), message, result);
                     None
                 }
                 else {
                     // Currently no leader to handle the request
-                    let result = query::Result::new(query::QUERY_RESULT_RETRY, "leader unknown".to_string(), "".to_string());
+                    let result = QueryResult::new(message::QUERY_RESULT_RETRY, "leader unknown".to_string(), "".to_string());
                     send_client_response(self.id(), message, result);
                     None
                 }
             }
             ElectionState::Candidate => {
                 // Leader offline, proceeding with election
-                let result = query::Result::new(query::QUERY_RESULT_CANDIDATE, "leader offline".to_string(), "".to_string());
+                let result = QueryResult::new(message::QUERY_RESULT_CANDIDATE, "leader offline".to_string(), "".to_string());
                 send_client_response(self.id(), message, result);
                 None
             }
@@ -782,12 +791,12 @@ fn send_vote_response(response: VoteResponse, recipient: String) {
         .name("vote response".into())
         .spawn(move || {
             // Send vote
-            message::send_vote_response(response, recipient);
+            net::send_vote_response(response, recipient);
         })
         .unwrap();
 }
 
-fn send_client_response(server_id: String, request: ClientRequest, result: query::Result) {
+fn send_client_response(server_id: String, request: ClientRequest, result: QueryResult) {
     thread::Builder::new()
         .name("client response".into())
         .spawn(move || {
@@ -798,7 +807,7 @@ fn send_client_response(server_id: String, request: ClientRequest, result: query
                 result
             };
             debug!("Sent client response to {:?}: {:?}", request.client_id, response);
-            message::send_client_response(response, request.client_id);
+            net::send_client_response(response, request.client_id);
         })
         .unwrap();
 }

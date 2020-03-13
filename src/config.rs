@@ -23,9 +23,11 @@ pub struct Cluster {
 pub struct Config {
     pub log_file: String,
     pub log_level: String,
+    pub handler_threads: usize,
     pub cluster: Cluster,
     pub election_timeout: u64,
     pub election_randomness: u64,
+    pub max_inactivity: u64,
 }
 
 pub fn get_config() -> Result<Config, Box<dyn Error>> {
@@ -43,6 +45,10 @@ pub fn get_config() -> Result<Config, Box<dyn Error>> {
     Ok(Config{
         log_file: String::from(properties.get("log.filename").expect("Missing property: log.filename")),
         log_level: String::from(properties.get("log.level").expect("Missing property: log.level")),
+        handler_threads: properties.get("handler.threads")
+            .expect("Missing property: handler.threads")
+            .parse()
+            .expect("Invalid value for handler threads"),
         cluster,
         election_timeout: properties.get("election.timeout")
             .expect("Missing property: election.timeout")
@@ -52,6 +58,10 @@ pub fn get_config() -> Result<Config, Box<dyn Error>> {
             .expect("Missing property: election.randomness")
             .parse()
             .expect("Invalid value for election randomness"),
+        max_inactivity: properties.get("max.inactivity")
+            .expect("Missing property: max.inactivity")
+            .parse()
+            .expect("Invalid value for maximum inactivity"),
     })
 }
 

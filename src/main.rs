@@ -1,7 +1,8 @@
 mod config;
+mod util;
 mod server;
 mod message;
-mod query;
+mod net;
 mod behavior;
 
 use std::process;

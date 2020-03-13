@@ -5,8 +5,8 @@ use log::{trace, info, warn};
 use std::thread;
 
 use crate::server::Server;
-use crate::message;
-use crate::message::{VoteRequest};
+use crate::net;
+use crate::message::VoteRequest;
 
 type Behavior = Box<dyn FnOnce()->Type + Sync + 'static>;
 
@@ -126,7 +126,7 @@ fn candidate_behavior(timeout_pair: Arc<(Mutex<Server>, Condvar)>) -> Behavior {
             let (last_term, last_index) = server.last_entry_indices();
 
             // Send vote requests to the other members
-            message::broadcast_vote_request(VoteRequest{
+            net::broadcast_vote_request(VoteRequest{
                 term: server.get_current_term(),
                 candidate_id: server.id(),
                 last_log_index: last_index,
@@ -194,7 +194,7 @@ fn leader_behavior(timeout_pair: Arc<(Mutex<Server>, Condvar)>) -> Behavior {
             // Send initial heartbeat
             let initial_append = server.get_initial_entries();
 
-            message::broadcast_append_entries_request(initial_append);
+            net::broadcast_append_entries_request(initial_append);
         }
 
         loop {
@@ -202,9 +202,7 @@ fn leader_behavior(timeout_pair: Arc<(Mutex<Server>, Condvar)>) -> Behavior {
             let mut server = lock.lock().unwrap();
 
             // Set maximum inactivity from leader to a percentage of the election timeout
-            // TODO: fine tune
-            let pct: f64 = 0.7;
-            let max_inactivity = (server.get_election_timeout() as f64 * pct) as u64;
+            let max_inactivity = server.get_max_inactivity();
 
             let result = timeout_cvar.wait_timeout(server, Duration::from_millis(max_inactivity)).unwrap();
 
@@ -220,11 +218,12 @@ fn leader_behavior(timeout_pair: Arc<(Mutex<Server>, Condvar)>) -> Behavior {
             if server.client_request_received {
                 server.client_request_received = false;
             }
+//
 
             // The new entries for each member
             let entries_map = server.get_next_entries();
 
-            message::broadcast_append_entries_request(entries_map);
+            net::broadcast_append_entries_request(entries_map);
 
             // TODO: remove this
             server.print_logs();

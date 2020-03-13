@@ -1,13 +1,19 @@
 use serde::{Serialize, Deserialize};
-use std::net::{UdpSocket, SocketAddr};
-use std::thread;
-use std::sync::Arc;
-
-use crate::config::Member;
-use crate::query;
 use std::error::Error;
-use crate::query::Query;
-use std::collections::HashMap;
+
+pub fn serialize<T: Serialize>(t: &T) -> Result<String, Box<dyn Error>> {
+    match serde_json::to_string(t) {
+        Ok(o) => Ok(o),
+        Err(e) => Err(e)?,
+    }
+}
+
+pub fn deserialize<'a, T: Deserialize<'a>>(json: &'a String) -> Result<T, Box<dyn Error>> {
+    match serde_json::from_str(json) {
+        Ok(o) => Ok(o),
+        Err(e) => Err(e)?,
+    }
+}
 
 #[derive(Debug)]
 pub enum Type {
@@ -38,18 +44,6 @@ pub fn get_type(code: u8) -> Option<Type> {
         _ => None
     }
 }
-pub fn serialize<T: Serialize>(t: &T) -> Result<String, Box<dyn Error>> {
-    match serde_json::to_string(t) {
-        Ok(o) => Ok(o),
-        Err(e) => Err(e)?,
-    }
-}
-pub fn deserialize<'a, T: Deserialize<'a>>(json: &'a String) -> Result<T, Box<dyn Error>> {
-    match serde_json::from_str(json) {
-        Ok(o) => Ok(o),
-        Err(e) => Err(e)?,
-    }
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LogEntry {
@@ -61,14 +55,14 @@ pub struct LogEntry {
 pub struct ClientRequest {
     pub client_id: String,
     pub request_id: String,
-    pub entry: query::Query,
+    pub entry: Query,
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClientResponse {
     pub server_id: String,
     pub client_id: String,
     pub request_id: String,
-    pub result: query::Result,
+    pub result: QueryResult,
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AppendEntriesRequest {
@@ -100,89 +94,37 @@ pub struct VoteResponse {
     pub vote_granted: bool,
 }
 
-pub fn broadcast_append_entries_request(map: HashMap<Member, AppendEntriesRequest>) {
-    let mut handles = Vec::new();
+pub const QUERY_RESULT_SUCCESS: u8 = 0x00;
+pub const QUERY_RESULT_REDIRECT: u8 = 0x01;
+pub const QUERY_RESULT_CANDIDATE: u8 = 0x12;
+pub const QUERY_RESULT_RETRY: u8 = 0x13;
 
-    for (member, request) in map {
-        let json: String = serialize(&request).unwrap();
-        let data = [&[MESSAGE_TYPE_APPEND_ENTRIES_REQUEST], json.as_bytes()].concat();
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum Action {
+    Get,
+    Post,
+    Put,
+    Delete,
+}
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Query {
+    pub action: Action,
+    pub key: String,
+    pub value: String,
+}
 
-        let handle = thread::Builder::new()
-            .name("broadcast append entries".into())
-            .spawn(move ||{
-                let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
-                let _ = socket.send_to(&data, SocketAddr::from(member.addr)).unwrap();
-            })
-            .unwrap();
-
-        handles.push(handle);
+#[derive(Serialize, Deserialize, Debug)]
+pub struct QueryResult {
+    error: u8,
+    message: String,
+    value: String,
+}
+impl QueryResult {
+    pub fn new(error: u8, message: String, value: String) -> QueryResult {
+        QueryResult {
+            error,
+            message,
+            value
+        }
     }
-
-    for handle in handles {
-        handle.join().unwrap();
-    }
-}
-
-pub fn broadcast_vote_request(message: VoteRequest, recipients: Vec<Member>) {
-
-    let json: String = serialize(&message).unwrap();
-
-    parallel_broadcast(MESSAGE_TYPE_VOTE_REQUEST, json, recipients);
-}
-
-fn parallel_broadcast(message_type: u8, json: String, recipients: Vec<Member>) {
-
-    let data = Arc::new([&[message_type], json.as_bytes()].concat());
-
-    let mut handles = Vec::new();
-
-    for member in recipients {
-
-        let address = SocketAddr::from(member.addr);
-        let data = data.clone();
-
-        let handle = thread::Builder::new()
-            .name("broadcast".into())
-            .spawn(move ||{
-                let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
-                let _ = socket.send_to(&data, address).unwrap();
-            })
-            .unwrap();
-
-        handles.push(handle);
-    }
-
-    for handle in handles {
-        handle.join().unwrap();
-    }
-}
-
-pub fn send_client_response(message: ClientResponse, recipient: String) {
-
-    let json: String = serialize(&message).unwrap();
-
-    send(MESSAGE_TYPE_CLIENT_RESPONSE, json, recipient);
-}
-
-pub fn send_vote_response(message: VoteResponse, recipient: String) {
-
-    let json: String = serialize(&message).unwrap();
-
-    send(MESSAGE_TYPE_VOTE_RESPONSE, json, recipient);
-}
-
-pub fn send_append_entries_response(message: AppendEntriesResponse, recipient: String) {
-
-    let json: String = serialize(&message).unwrap();
-
-    send(MESSAGE_TYPE_APPEND_ENTRIES_RESPONSE, json, recipient);
-}
-
-fn send(message_type: u8, json: String, recipient: String) {
-
-    let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
-
-    let data = [&[message_type], json.as_bytes()].concat();
-
-    socket.send_to(&data, recipient).unwrap();
 }
