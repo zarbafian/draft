@@ -2,12 +2,12 @@ use serde::{Serialize, Deserialize};
 use std::net::{UdpSocket, SocketAddr};
 use std::thread;
 use std::sync::Arc;
-use log::{debug};
 
-use crate::config::{Config};
+use crate::config::Member;
 use crate::query;
 use std::error::Error;
 use crate::query::Query;
+use std::collections::HashMap;
 
 #[derive(Debug)]
 pub enum Type {
@@ -100,31 +100,54 @@ pub struct VoteResponse {
     pub vote_granted: bool,
 }
 
-pub fn broadcast_vote_request(message: VoteRequest, config: &Config) {
+pub fn broadcast_append_entries_request(map: HashMap<Member, AppendEntriesRequest>) {
+    let mut handles = Vec::new();
+
+    for (member, request) in map {
+        let json: String = serialize(&request).unwrap();
+        let data = [&[MESSAGE_TYPE_APPEND_ENTRIES_REQUEST], json.as_bytes()].concat();
+
+        let handle = thread::Builder::new()
+            .name("broadcast append entries".into())
+            .spawn(move ||{
+                let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+                let _ = socket.send_to(&data, SocketAddr::from(member.addr)).unwrap();
+            })
+            .unwrap();
+
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
+pub fn broadcast_vote_request(message: VoteRequest, recipients: Vec<Member>) {
 
     let json: String = serialize(&message).unwrap();
 
-    parallel_broadcast(MESSAGE_TYPE_VOTE_REQUEST, json, config);
+    parallel_broadcast(MESSAGE_TYPE_VOTE_REQUEST, json, recipients);
 }
 
-pub fn parallel_broadcast(message_type: u8, json: String, config: &Config) {
+fn parallel_broadcast(message_type: u8, json: String, recipients: Vec<Member>) {
 
     let data = Arc::new([&[message_type], json.as_bytes()].concat());
 
     let mut handles = Vec::new();
 
-    for member in &config.cluster.others {
+    for member in recipients {
 
         let address = SocketAddr::from(member.addr);
-        let json = json.clone();
         let data = data.clone();
 
-        let handle = thread::Builder::new().name("broadcast".into()).spawn(move ||{
-            let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
-            let _ = socket.send_to(&data, address).unwrap();
-
-            debug!("Sent message {} to {}: {}", message_type, address, json);
-        }).unwrap();
+        let handle = thread::Builder::new()
+            .name("broadcast".into())
+            .spawn(move ||{
+                let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+                let _ = socket.send_to(&data, address).unwrap();
+            })
+            .unwrap();
 
         handles.push(handle);
     }
@@ -155,14 +178,7 @@ pub fn send_append_entries_response(message: AppendEntriesResponse, recipient: S
     send(MESSAGE_TYPE_APPEND_ENTRIES_RESPONSE, json, recipient);
 }
 
-pub fn send_append_entries(message: AppendEntriesRequest, recipient: String) {
-
-    let json: String = serialize(&message).unwrap();
-
-    send(MESSAGE_TYPE_APPEND_ENTRIES_REQUEST, json, recipient);
-}
-
-pub fn send(message_type: u8, json: String, recipient: String) {
+fn send(message_type: u8, json: String, recipient: String) {
 
     let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
 

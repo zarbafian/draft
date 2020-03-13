@@ -2,6 +2,7 @@ mod config;
 mod server;
 mod message;
 mod query;
+mod behavior;
 
 use std::process;
 

@@ -8,7 +8,7 @@ use std::net::{self, SocketAddr};
 const ENV_CONFIG_PATH: &str = "DRAFT_CONFIG";
 const PROPERTY_SEPARATOR: &str = "=";
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Member {
     pub addr: net::SocketAddr,
 }
