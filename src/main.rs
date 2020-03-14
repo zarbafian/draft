@@ -4,6 +4,7 @@ mod server;
 mod message;
 mod net;
 mod behavior;
+mod data;
 
 use std::process;
 

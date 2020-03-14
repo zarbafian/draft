@@ -10,6 +10,7 @@ use crate::config::{Member, Config};
 use crate::message::{self, AppendEntriesRequest, VoteRequest, LogEntry, VoteResponse, AppendEntriesResponse, ClientRequest, ClientResponse, Query, QueryResult};
 use crate::behavior;
 use crate::util::ThreadPool;
+use crate::data::{self, StateMachine};
 
 macro_rules! parse_json {
     ($x:expr) => {
@@ -136,6 +137,8 @@ pub fn start(config: Config) {
                                     let mut server = lock.lock().unwrap();
 
                                     let client = message.client_id.clone();
+
+                                    // `Some` is returned if the entries were added, `None` otherwise (i.e. error with client queries)
                                     if let Some(i) = server.apply_client_request(message.clone()) {
                                         // Client request received, replicate
                                         server.pending_responses.insert(client, (message, i));
@@ -182,6 +185,7 @@ pub struct Server {
     match_index: HashMap<String, usize>,
 
     log: Vec<LogEntry>,
+    state_machine: StateMachine,
 
     pending_responses: HashMap<String, (ClientRequest, usize)>,
 }
@@ -211,6 +215,7 @@ impl Server {
             next_index,
             match_index,
             log: Vec::new(),
+            state_machine: StateMachine::new(),
             pending_responses: HashMap::new(),
         }
     }
@@ -620,7 +625,7 @@ impl Server {
             self.next_index.iter().for_each(|(_, &value)| { sorted_indices.push(value) });
 
             // Add self
-            let (_, last_index) = self.last_entry_indices();
+            let (last_term, last_index) = self.last_entry_indices();
             sorted_indices.push(last_index + 1);
 
             // Sort in ascending order, and reverse to have an descending order
@@ -631,19 +636,29 @@ impl Server {
             let required_majority = ((self.next_index.len() + 1) as f64 / 2 as f64).ceil() as usize;
             let commit_index = sorted_indices[required_majority - 1] - 1;
 
-            if commit_index != self.commit_index {
+            if commit_index > self.commit_index && last_term == self.current_term {
                 debug!("Commit index, sorted_indices={:?}, required_majority={}, commit_index={} -> commit_index={}", sorted_indices, required_majority, self.commit_index, commit_index);
-            }
 
-            // Update commit index
-            self.commit_index = commit_index;
+                // Apply to state machine
+                let commit_index_start = self.commit_index; // array index of last committed index, plus one
+                let commit_index_end = commit_index; // array index right after new commit index
+                for entry in &self.log[commit_index_start..commit_index_end] {
+                    self.state_machine.execute_query(entry.data.clone());
+                }
+
+                // Update last applied
+                self.last_applied = commit_index;
+
+                // Update commit index
+                self.commit_index = commit_index;
+            }
 
             // Respond to pending request from client
             let mut answered_responses = Vec::new();
             for (client_id, (request, required_commit)) in self.pending_responses.iter() {
                 if self.commit_index >= *required_commit {
                     // Respond to client
-                    let result = QueryResult::new(message::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
+                    let result = QueryResult::new(data::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
                     send_client_response(self.id(), request.clone(), result);
                     answered_responses.push(client_id.clone());
                 }
@@ -743,26 +758,26 @@ impl Server {
         match self.state {
             ElectionState::Leader => {
                 // Handle message
-                let log_index = self.append_log_entries(vec![message.entry.clone()]);
+                let log_index = self.append_log_entry(message.query);
                 Some(log_index)
             },
             ElectionState::Follower => {
                 if let Some(leader) = self.leader_id.borrow() {
                     // Redirect to leader by sending its address
-                    let result = QueryResult::new(message::QUERY_RESULT_REDIRECT, "leader redirect".to_string(), leader.to_string());
+                    let result = QueryResult::new(data::QUERY_RESULT_REDIRECT, "leader redirect".to_string(), leader.to_string());
                     send_client_response(self.id(), message, result);
                     None
                 }
                 else {
                     // Currently no leader to handle the request
-                    let result = QueryResult::new(message::QUERY_RESULT_RETRY, "leader unknown".to_string(), "".to_string());
+                    let result = QueryResult::new(data::QUERY_RESULT_RETRY, "leader unknown".to_string(), "".to_string());
                     send_client_response(self.id(), message, result);
                     None
                 }
             }
             ElectionState::Candidate => {
                 // Leader offline, proceeding with election
-                let result = QueryResult::new(message::QUERY_RESULT_CANDIDATE, "leader offline".to_string(), "".to_string());
+                let result = QueryResult::new(data::QUERY_RESULT_CANDIDATE, "leader offline".to_string(), "".to_string());
                 send_client_response(self.id(), message, result);
                 None
             }
@@ -770,16 +785,14 @@ impl Server {
     }
 
     /// Returns the commit index for the entries to be considered commited
-    fn append_log_entries(&mut self, queries: Vec<Query>) -> usize {
+    fn append_log_entry(&mut self, query: Query) -> usize {
 
-        for q in queries {
-            info!("will append log: {:?}", q);
-            self.log.push(LogEntry {
-                term: self.current_term,
-                index: self.log.len() + 1,
-                data: q,
-            });
-        }
+        info!("will append log: {:?}", query);
+        self.log.push(LogEntry {
+            term: self.current_term,
+            index: self.log.len() + 1,
+            data: query,
+        });
 
         self.log.len()
     }

@@ -218,7 +218,6 @@ fn leader_behavior(timeout_pair: Arc<(Mutex<Server>, Condvar)>) -> Behavior {
             if server.client_request_received {
                 server.client_request_received = false;
             }
-//
 
             // The new entries for each member
             let entries_map = server.get_next_entries();

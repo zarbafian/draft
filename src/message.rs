@@ -55,7 +55,7 @@ pub struct LogEntry {
 pub struct ClientRequest {
     pub client_id: String,
     pub request_id: String,
-    pub entry: Query,
+    pub query: Query,
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClientResponse {
@@ -94,16 +94,10 @@ pub struct VoteResponse {
     pub vote_granted: bool,
 }
 
-pub const QUERY_RESULT_SUCCESS: u8 = 0x00;
-pub const QUERY_RESULT_REDIRECT: u8 = 0x01;
-pub const QUERY_RESULT_CANDIDATE: u8 = 0x12;
-pub const QUERY_RESULT_RETRY: u8 = 0x13;
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Action {
     Get,
-    Post,
-    Put,
+    Save,
     Delete,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -115,9 +109,9 @@ pub struct Query {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct QueryResult {
-    error: u8,
-    message: String,
-    value: String,
+    pub error: u8,
+    pub message: String,
+    pub value: String,
 }
 impl QueryResult {
     pub fn new(error: u8, message: String, value: String) -> QueryResult {
