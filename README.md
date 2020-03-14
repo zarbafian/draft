@@ -1,7 +1,7 @@
-# draft
-Replicated in-memory database using Raft.
+# Draft
+Draft is replicated in-memory database using the Raft algorithm (https://raft.github.io/).
 
-For the client see: https://github.com/pouriya-zarbafian/draft-client
+For the database client see: https://github.com/pouriya-zarbafian/draft-client
 
 # Setup on each node
 ## Configuration file
@@ -28,9 +28,9 @@ handler.threads=4
 log.filename=log/node1.log
 log.level=INFO
 ```
-# Set environment variable start server
+## Set environment variable and start server
 ```
 cd /path/to/draft_project
-export DRAFT_CONFIG=/path/to/draft/config/draft.conf
+export DRAFT_CONFIG=/path/to/config/draft.conf
 cargo run
 ```
