@@ -223,9 +223,6 @@ fn leader_behavior(timeout_pair: Arc<(Mutex<Server>, Condvar)>) -> Behavior {
             let entries_map = server.get_next_entries();
 
             net::broadcast_append_entries_request(entries_map);
-
-            // TODO: remove this
-            server.print_logs();
         }
     })
 }

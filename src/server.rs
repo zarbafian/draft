@@ -138,7 +138,7 @@ pub fn start(config: Config) {
 
                                     let client = message.client_id.clone();
 
-                                    // `Some` is returned if the entries were added, `None` otherwise (i.e. error with client queries)
+                                    // `Some` is returned if the entries were added, `None` otherwise (i.e. read only or error with client queries)
                                     if let Some(i) = server.apply_client_request(message.clone()) {
                                         // Client request received, replicate
                                         server.pending_responses.insert(client, (message, i));
@@ -265,11 +265,19 @@ impl Server {
         others
     }
 
-    pub fn print_logs(&self) {
-        debug!("***** LOGS *****");
-        for e in self.log.iter() {
-            debug!("{:?}", e);
+    /// Update commit and apply commited entries to state machine
+    fn update_state_machine(&mut self, commit_index: usize) {
+        let commit_index_start = self.commit_index; // array index of last committed index, plus one
+        let commit_index_end = commit_index; // array index right after new commit index
+        for entry in &self.log[commit_index_start..commit_index_end] {
+            self.state_machine.execute_query(entry.data.clone());
         }
+
+        // Update last applied
+        self.last_applied = commit_index;
+
+        // Update commit index
+        self.commit_index = commit_index;
     }
 
     /// Returns the initial empty append entries to be sent to the followers.
@@ -440,7 +448,6 @@ impl Server {
                 // Start scenario
                 if request.prev_log_index == 0 {
 
-                    info!("Received first log");
                     self.log.clear();
 
                     // Append new entries
@@ -461,10 +468,8 @@ impl Server {
                         );
                     });
 
-                    // TODO: remove this
-                    debug!("----- FOLLOWER NEW LOG");
-                    for e in self.log.iter() {
-                        debug!("{:?}", e);
+                    if request.leader_commit > self.commit_index {
+                        self.update_state_machine(request.leader_commit);
                     }
                 }
                 // Normal scenario
@@ -491,6 +496,9 @@ impl Server {
                                         self.log.pop();
                                     }
                                 }
+
+                                let new_entries_count = request.entries.len();
+
                                 // Append new entries
                                 self.log.append(request.entries.as_mut());
 
@@ -514,12 +522,10 @@ impl Server {
                                     );
                                 });
 
-                                // TODO: remove this
-                                debug!("----- FOLLOWER NEW LOG");
-                                for e in self.log.iter() {
-                                    debug!("{:?}", e);
+                                // Update commit
+                                if request.leader_commit > self.commit_index {
+                                    self.update_state_machine(request.leader_commit);
                                 }
-
                             } else {
                                 debug!("Previous index and term did not match, delete entries after ");
                                 let first_to_delete = request.prev_log_index - 1; // -1 for array indexing
@@ -640,17 +646,7 @@ impl Server {
                 debug!("Commit index, sorted_indices={:?}, required_majority={}, commit_index={} -> commit_index={}", sorted_indices, required_majority, self.commit_index, commit_index);
 
                 // Apply to state machine
-                let commit_index_start = self.commit_index; // array index of last committed index, plus one
-                let commit_index_end = commit_index; // array index right after new commit index
-                for entry in &self.log[commit_index_start..commit_index_end] {
-                    self.state_machine.execute_query(entry.data.clone());
-                }
-
-                // Update last applied
-                self.last_applied = commit_index;
-
-                // Update commit index
-                self.commit_index = commit_index;
+                self.update_state_machine(commit_index);
             }
 
             // Respond to pending request from client
@@ -668,7 +664,7 @@ impl Server {
             for key in answered_responses.iter() {
                 self.pending_responses.remove(key);
             }
-            info!("Size of pending requests: {}", self.pending_responses.len());
+            debug!("Size of pending requests: {}", self.pending_responses.len());
         }
         else {
             *next_index -= 1;
@@ -691,7 +687,7 @@ impl Server {
 
             if request.last_log_term < my_last_term || (request.last_log_term == my_last_term && request.last_log_index < my_last_index) {
                 // Vote rejected because candidate is behind
-                info!("Vote rejected because candidate is behin: {}, {} < {}, {}", request.last_log_term, request.last_log_index, my_last_term, my_last_index);
+                info!("Vote rejected because candidate is behind: {}, {} < {}, {}", request.last_log_term, request.last_log_index, my_last_term, my_last_index);
                 send_vote_response(VoteResponse {
                     voter_id: self.id(),
                     term: self.current_term,
@@ -757,9 +753,19 @@ impl Server {
 
         match self.state {
             ElectionState::Leader => {
-                // Handle message
-                let log_index = self.append_log_entry(message.query);
-                Some(log_index)
+                match message.query.action {
+                    message::Action::Get => {
+                        // Handle read only query
+                        let result = self.state_machine.execute_query(message.query.clone());
+                        send_client_response(self.id(), message, result);
+                        None
+                    }
+                    _ => {
+                        // Handle write query
+                        let log_index = self.append_log_entry(message.query);
+                        Some(log_index)
+                    }
+                }
             },
             ElectionState::Follower => {
                 if let Some(leader) = self.leader_id.borrow() {
