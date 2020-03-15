@@ -59,7 +59,7 @@ fn follower_behavior(timeout_pair: Arc<(Mutex<Server>, Condvar)>) -> Behavior {
         let mut rand = rand::thread_rng();
 
         // Outer loop for handling heartbeats
-        'outer: loop {
+        loop {
             trace!("follower: timeout loop start");
 
             let timeout_loop_pair = timeout_pair.clone();
@@ -76,7 +76,7 @@ fn follower_behavior(timeout_pair: Arc<(Mutex<Server>, Condvar)>) -> Behavior {
             let mut elapsed = 0;
 
             // Inner loop to make sure we waited the full length of the timeout
-            'inner: loop {
+            loop {
                 let result = timeout_cvar.wait_timeout(server, Duration::from_millis(timeout - elapsed)).unwrap();
 
                 elapsed = start.elapsed().as_millis() as u64;
