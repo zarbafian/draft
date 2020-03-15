@@ -497,8 +497,6 @@ impl Server {
                                     }
                                 }
 
-                                let new_entries_count = request.entries.len();
-
                                 // Append new entries
                                 self.log.append(request.entries.as_mut());
 
@@ -654,7 +652,11 @@ impl Server {
             for (client_id, (request, required_commit)) in self.pending_responses.iter() {
                 if self.commit_index >= *required_commit {
                     // Respond to client
-                    let result = QueryResult::new(data::QUERY_RESULT_SUCCESS, "success".to_string(), "".to_string());
+                    let result = QueryResult{
+                        error: data::QUERY_RESULT_SUCCESS,
+                        message: "success".to_string(),
+                        value: None
+                    };
                     send_client_response(self.id(), request.clone(), result);
                     answered_responses.push(client_id.clone());
                 }
@@ -760,8 +762,26 @@ impl Server {
                         send_client_response(self.id(), message, result);
                         None
                     }
-                    _ => {
-                        // Handle write query
+                    message::Action::Save => {
+                        match message.query.value {
+                            Some(_) => {
+                                // Handle save query
+                                let log_index = self.append_log_entry(message.query);
+                                Some(log_index)
+                            },
+                            None => {
+                                let result = QueryResult{
+                                    error: data::QUERY_RESULT_ERROR,
+                                    message: "value is mandatory".to_string(),
+                                    value: None
+                                };
+                                send_client_response(self.id(), message, result);
+                                None
+                            }
+                        }
+                    }
+                    message::Action::Delete => {
+                        // Handle delete query
                         let log_index = self.append_log_entry(message.query);
                         Some(log_index)
                     }
@@ -770,20 +790,32 @@ impl Server {
             ElectionState::Follower => {
                 if let Some(leader) = self.leader_id.borrow() {
                     // Redirect to leader by sending its address
-                    let result = QueryResult::new(data::QUERY_RESULT_REDIRECT, "leader redirect".to_string(), leader.to_string());
+                    let result = QueryResult{
+                        error: data::QUERY_RESULT_REDIRECT,
+                        message: "leader redirect".to_string(),
+                        value: Some(leader.to_string())
+                    };
                     send_client_response(self.id(), message, result);
                     None
                 }
                 else {
                     // Currently no leader to handle the request
-                    let result = QueryResult::new(data::QUERY_RESULT_RETRY, "leader unknown".to_string(), "".to_string());
+                    let result = QueryResult{
+                        error: data::QUERY_RESULT_RETRY,
+                        message: "leader unknown".to_string(),
+                        value: None
+                    };
                     send_client_response(self.id(), message, result);
                     None
                 }
             }
             ElectionState::Candidate => {
                 // Leader offline, proceeding with election
-                let result = QueryResult::new(data::QUERY_RESULT_CANDIDATE, "leader offline".to_string(), "".to_string());
+                let result = QueryResult{
+                    error: data::QUERY_RESULT_CANDIDATE,
+                    message: "leader offline".to_string(),
+                    value: None
+                };
                 send_client_response(self.id(), message, result);
                 None
             }

@@ -104,21 +104,12 @@ pub enum Action {
 pub struct Query {
     pub action: Action,
     pub key: String,
-    pub value: String,
+    pub value: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct QueryResult {
     pub error: u8,
     pub message: String,
-    pub value: String,
-}
-impl QueryResult {
-    pub fn new(error: u8, message: String, value: String) -> QueryResult {
-        QueryResult {
-            error,
-            message,
-            value
-        }
-    }
+    pub value: Option<String>,
 }
