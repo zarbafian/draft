@@ -68,7 +68,7 @@ fn follower_behavior(timeout_pair: Arc<(Mutex<Server>, Condvar)>) -> Behavior {
             let mut server = lock.lock().unwrap();
 
             // Randomize election timeout in the range [election_timeout, election_timeout + election_randomness[
-            let timeout = server.get_election_timeout() + rand.gen_range(0, server.get_election_randomness());
+            let timeout = server.get_election_timeout() + rand.gen_range(0..server.get_election_randomness());
 
             trace!("follower: timeout is {} ms for heartbeat", timeout);
 
@@ -120,7 +120,7 @@ fn candidate_behavior(timeout_pair: Arc<(Mutex<Server>, Condvar)>) -> Behavior {
             server.init_election();
 
             // Election timeout
-            timeout = server.get_election_timeout() + rand.gen_range(0, server.get_election_randomness());
+            timeout = server.get_election_timeout() + rand.gen_range(0..server.get_election_randomness());
 
             // Latest log entry
             let (last_term, last_index) = server.last_entry_indices();
